@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Latif GX</title>
+  <meta name="description" content="Latif GX — AI operating environment" />
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c0e14;
+      --panel: #121827;
+      --panel-strong: #161c2c;
+      --text: #e7edf8;
+      --muted: #8aa0b8;
+      --accent: #7c5cf0;
+      --accent-strong: #a36cff;
+      --success: #48d4a5;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --border: rgba(170, 186, 221, 0.12);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, rgba(124,92,240,.18), transparent 28%), var(--bg); color: var(--text); }
+    .layout { display: grid; grid-template-columns: 1.4fr 0.9fr; gap: 18px; padding: 20px; max-width: 1600px; margin: 0 auto; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 24px; padding: 20px; box-shadow: 0 40px 120px rgba(0,0,0,.16); }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+    header h1 { font-size: 1.45rem; margin: 0; letter-spacing: -.02em; }
+    .pill { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,.08); background: rgba(255,255,255,.04); font-size: .92rem; }
+    .pill-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--warning); box-shadow: 0 0 0 4px rgba(248, 201, 0, .12); }
+    .pill-dot.online { background: var(--success); box-shadow: 0 0 0 4px rgba(72, 212, 165, .14); }
+    .chat-shell { display: grid; grid-template-rows: auto 1fr auto; min-height: 76vh; gap: 16px; }
+    .chat-stream { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 4px; max-height: calc(76vh - 150px); }
+    .bubble { max-width: 78%; padding: 16px 18px; border-radius: 20px; line-height: 1.6; border: 1px solid transparent; }
+    .bubble.user { align-self: flex-end; background: rgba(124,92,240,.14); border-color: rgba(124,92,240,.22); }
+    .bubble.assistant { align-self: flex-start; background: rgba(15, 23, 42, .92); border-color: rgba(255,255,255,.06); }
+    .bubble small { display: block; margin-top: 8px; color: var(--muted); }
+    .chat-input { display: grid; gap: 12px; }
+    .chat-input textarea { width: 100%; min-height: 120px; resize: vertical; border: 1px solid var(--border); border-radius: 18px; padding: 16px; background: #0d1221; color: var(--text); font: inherit; outline: none; }
+    .action-row { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+    button { color: var(--text); background: linear-gradient(135deg, rgba(124,92,240,.95), rgba(163,108,255,.92)); border: none; border-radius: 14px; padding: 12px 18px; font: inherit; cursor: pointer; transition: transform .15s ease, box-shadow .15s ease; }
+    button:hover { transform: translateY(-1px); box-shadow: 0 18px 40px rgba(124,92,240,.24); }
+    button.danger { background: rgba(248,113,113,.95); }
+    button.secondary { background: rgba(255,255,255,.08); color: var(--text); }
+    .info-block { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06); border-radius: 18px; padding: 14px 16px; color: var(--muted); font-size: .95rem; }
+    .settings-panel { display: grid; gap: 18px; }
+    .settings-section { background: rgba(255,255,255,.03); border: 1px solid var(--border); border-radius: 22px; padding: 18px; }
+    .section-title { font-size: 1rem; margin-bottom: 12px; color: var(--text); font-weight: 600; }
+    .field-group { display: grid; gap: 10px; }
+    .field-label { display: block; font-size: .88rem; color: var(--muted); margin-bottom: 4px; }
+    input, select { width: 100%; border: 1px solid var(--border); border-radius: 14px; background: #0c1220; color: var(--text); padding: 12px 14px; font: inherit; }
+    .field-hint { color: var(--muted); font-size: .9rem; line-height: 1.5; }
+    .cache-status-cards { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; }
+    .status-card { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 14px; }
+    .status-value { font-size: 1.3rem; font-weight: 700; margin-bottom: 4px; }
+    .status-label { font-size: .88rem; color: var(--muted); }
+    .button-group { display: flex; gap: 10px; flex-wrap: wrap; }
+    .modal-backdrop, .modal { position: fixed; left: 0; top: 0; width: 100%; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+    .modal-backdrop.open { opacity: 1; pointer-events: all; background: rgba(0,0,0,.55); z-index: 20; }
+    .modal { display: grid; place-items: center; min-height: 100vh; z-index: 25; padding: 20px; }
+    .modal.open { opacity: 1; pointer-events: all; }
+    .modal-inner { width: min(760px,100%); background: var(--panel-strong); border: 1px solid var(--border); border-radius: 26px; padding: 22px; box-shadow: 0 30px 90px rgba(0,0,0,.35); }
+    .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
+    .modal-title { font-size: 1.15rem; font-weight: 700; }
+    .icon-btn { border: none; background: rgba(255,255,255,.08); border-radius: 999px; width: 38px; height: 38px; cursor: pointer; color: var(--text); }
+    .stat-row { display: flex; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+    .stat-row:last-child { border-bottom: none; }
+    .stat-name { color: var(--muted); }
+    .stat-value { font-weight: 600; }
+    .cache-entry-list { display: grid; gap: 10px; max-height: 320px; overflow-y: auto; }
+    .cache-entry { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 12px 14px; }
+    .entry-model, .entry-query, .entry-date { font-size: .92rem; color: var(--text); }
+    .entry-model { font-weight: 600; margin-bottom: 6px; }
+    .toast { position: fixed; right: 20px; bottom: 20px; background: rgba(15,23,42,.96); border: 1px solid rgba(124,92,240,.4); border-radius: 18px; padding: 14px 18px; color: var(--text); z-index: 40; box-shadow: 0 24px 60px rgba(0,0,0,.35); opacity: 0; transform: translateY(12px); transition: opacity .2s ease, transform .2s ease; }
+    .toast.visible { opacity: 1; transform: translateY(0); }
+    .quick-prompt-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .quick-prompt { background: rgba(124,92,240,.12); border: 1px solid rgba(124,92,240,.22); border-radius: 999px; color: var(--text); padding: 8px 12px; font: inherit; cursor: pointer; }
+    .skill-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .skill-chip { display: inline-flex; align-items: center; padding: 8px 10px; border-radius: 999px; background: rgba(255,255,255,.05); color: var(--muted); border: 1px solid rgba(255,255,255,.08); font-size: .9rem; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <section class="panel chat-shell">
+      <header>
+        <div>
+          <h1>Latif GX</h1>
+          <div class="pill"><span id="serverDot" class="pill-dot"></span><span id="serverPillText">Detecting Ollama...</span></div>
+        </div>
+        <button id="btnOpenSettings" class="secondary">Settings</button>
+      </header>
+      <div class="info-block" id="cacheHint">Offline cache is ready. If Ollama is unavailable, cached responses can still assist.</div>
+      <div class="chat-stream" id="chatStream"></div>
+      <div class="chat-input">
+        <textarea id="chatInput" placeholder="Ask Latif anything — text, tasks, documents, or commands." rows="4"></textarea>
+        <div id="quickPrompts" class="quick-prompt-row"></div>
+        <div class="action-row">
+          <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <button id="btnSend">Send</button>
+            <button id="btnVoice" class="secondary">Voice</button>
+            <button id="btnAttachments" class="secondary">Attachments</button>
+          </div>
+          <span id="statusLine" class="field-hint">Ready for AI assistant workflows.</span>
+        </div>
+      </div>
+    </section>
+    <aside class="panel settings-panel" id="settingsPanel">
+      <div class="settings-section">
+        <div class="section-title">Server &amp; Connection</div>
+        <div class="field-group">
+          <label class="field-label" for="providerSelect">Provider</label>
+          <select id="providerSelect">
+            <option value="auto">Auto-detect</option>
+            <option value="ollama">Ollama</option>
+            <option value="llama.cpp">llama.cpp</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="hostInput">Local Host</label>
+          <input id="hostInput" type="text" placeholder="127.0.0.1" />
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="portInput">Local Port</label>
+          <input id="portInput" type="text" placeholder="11434" />
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="modelInput">Preferred Model</label>
+          <input id="modelInput" type="text" placeholder="llama3.2" />
+        </div>
+        <div class="field-group">
+          <button id="btnTestServer" class="secondary">Test Connection</button>
+          <div class="field-hint">The app auto-detects local Ollama or llama.cpp instances, including common Android-friendly addresses such as 10.0.2.2 and LAN IPs.</div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="section-title">Modern AI Skills</div>
+        <div id="skillChips" class="skill-chip-row"></div>
+        <div class="field-hint" style="margin-top:10px;">These quick skills help the assistant adapt to your prompt for coding, research, writing, and brainstorming.</div>
+      </div>
+      <div class="settings-section">
+        <div class="section-title">Offline Cache</div>
+        <div class="field-group cache-status-cards">
+          <div class="status-card">
+            <div class="status-value" id="cacheSizeDisplay">—</div>
+            <div class="status-label">Cache Size</div>
+          </div>
+          <div class="status-card">
+            <div class="status-value" id="cacheCountDisplay">0</div>
+            <div class="status-label">Responses</div>
+          </div>
+        </div>
+        <div class="field-group">
+          <div class="button-group">
+            <button id="btnViewCacheStats" class="secondary">View Details</button>
+            <button id="btnClearCache" class="danger">Clear Cache</button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="modal-backdrop" id="cacheStatsBackdrop"></div>
+  <div class="modal" id="cacheStatsModal">
+    <div class="modal-inner">
+      <div class="modal-head">
+        <div class="modal-title">Cache Statistics</div>
+        <button class="icon-btn" id="btnCloseCacheStats">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="field-group">
+          <div class="stat-row"><span class="stat-name">Total Size:</span><span class="stat-value" id="cacheTotalSize">—</span></div>
+          <div class="stat-row"><span class="stat-name">Entries:</span><span class="stat-value" id="cacheTotalEntries">0</span></div>
+          <div class="stat-row"><span class="stat-name">Oldest Entry:</span><span class="stat-value" id="cacheOldestEntry">—</span></div>
+          <div class="stat-row"><span class="stat-name">Newest Entry:</span><span class="stat-value" id="cacheNewestEntry">—</span></div>
+        </div>
+        <div class="field-group">
+          <label class="field-label">Recent Entries</label>
+          <div id="cacheEntryList" class="cache-entry-list"><div class="cache-entry">No cached responses yet.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
