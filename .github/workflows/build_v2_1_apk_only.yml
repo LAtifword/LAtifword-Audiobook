@@ -1,4 +1,4 @@
-name: Build LATIF Audiobook AI v2.1 APK only
+name: Build LATIF Audiobook AI v2.1.1 Signed Runtime Fix
 
 on:
   push:
@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build:
@@ -56,22 +57,78 @@ jobs:
           test -s app/src/main/assets/nabra-82m/model.fp16.onnx
           test -s app/src/main/assets/rawi-diacritizer/rawi_ensemble.int8.onnx
 
-      - name: Build aligned APK
+      - name: Build and validate unsigned APK
         working-directory: standalone-android
         run: |
           set -euxo pipefail
-          gradle --no-daemon :app:assembleRelease
+          gradle --no-daemon :app:compileReleaseKotlin :app:assembleRelease
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libsherpa-onnx-jni.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libonnxruntime.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libonnxruntime4j_jni.so'
+          unzip -l "$APK" | grep -q 'assets/nabra-82m/model.fp16.onnx'
+          unzip -l "$APK" | grep -q 'assets/rawi-diacritizer/rawi_ensemble.int8.onnx'
           mkdir -p ../apk-only
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 \
-            app/build/outputs/apk/release/app-release-unsigned.apk \
-            ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk
-          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk >/dev/null
-          sha256sum ../apk-only/*.apk > ../apk-only/SHA256SUMS.txt
-          ls -lh ../apk-only/
+            "$APK" \
+            ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk >/dev/null
+
+      - name: Sign with permanent LATIF release certificate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VAULT_RUN=34709949240
+          VAULT_NAME='LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT'
+          VAULT_ZIP_NAME='LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT.zip'
+          EXPECTED_CERT_SHA256='ee0283bc5a72f2b7a9b7285e2de17c52a9dfb524fb58354c32aefb4fbba258f5'
+
+          rm -rf /tmp/latif-vault-download /tmp/latif-vault
+          mkdir -p /tmp/latif-vault-download /tmp/latif-vault
+          gh run download "$VAULT_RUN" --name "$VAULT_NAME" --dir /tmp/latif-vault-download
+          test -s "/tmp/latif-vault-download/$VAULT_ZIP_NAME"
+          unzip -q "/tmp/latif-vault-download/$VAULT_ZIP_NAME" -d /tmp/latif-vault
+
+          KEYSTORE=/tmp/latif-vault/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks
+          PASS_NOTE=/tmp/latif-vault/KEEP-THIS-KEY-PRIVATE.txt
+          test -s "$KEYSTORE"
+          test -s "$PASS_NOTE"
+          STORE_PASS="$(sed -n 's/^Store password: //p' "$PASS_NOTE" | head -n1)"
+          test -n "$STORE_PASS"
+          export LATIF_STORE_PASS="$STORE_PASS"
+
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          UNSIGNED=apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk
+          SIGNED=apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-SIGNED.apk
+
+          "$BT/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias latif-audiobook-release \
+            --ks-pass env:LATIF_STORE_PASS \
+            --key-pass env:LATIF_STORE_PASS \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$SIGNED" \
+            "$UNSIGNED"
+
+          "$BT/apksigner" verify --verbose --print-certs "$SIGNED" | tee apk-only/SIGNATURE-VERIFY.txt
+          CERT_SHA="$("$BT/apksigner" verify --print-certs "$SIGNED" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr '[:upper:]' '[:lower:]' | head -n1)"
+          test "$CERT_SHA" = "$EXPECTED_CERT_SHA256"
+          "$BT/zipalign" -c -v 4 "$SIGNED" >/dev/null
+          unzip -t "$SIGNED" >/dev/null
+
+          rm -f "$UNSIGNED"
+          sha256sum "$SIGNED" > apk-only/SHA256SUMS.txt
+          unset LATIF_STORE_PASS STORE_PASS
+          rm -rf /tmp/latif-vault-download /tmp/latif-vault
+          ls -lh apk-only/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LATIF-AUDIOBOOK-AI-v2.1.0-APK-ONLY
+          name: LATIF-AUDIOBOOK-AI-v2.1.1-RUNTIME-FIX-SIGNED
           path: apk-only/*
           retention-days: 30
           compression-level: 0

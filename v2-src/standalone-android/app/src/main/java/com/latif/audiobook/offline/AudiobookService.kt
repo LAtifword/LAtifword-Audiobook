@@ -93,11 +93,18 @@ class AudiobookService : Service() {
                 numThreads = 4,
             )
 
-            sendProgress(5, "Loading Rawi tashkeel + Nabra voice…")
-            diacritizer = RawiDiacritizer(this)
+            // Load Nabra first. The previous build initialized the separate Java
+            // ONNX Runtime bridge before sherpa-onnx and could fail at
+            // ai.onnxruntime.OrtEnvironment before TTS ever started.
+            sendProgress(5, "Loading Nabra voice…")
             tts = OfflineTts(assetManager = assets, config = config)
             val sampleRate = tts.sampleRate()
             writer = M4aWriter(this, title, sampleRate, bitrate = 96_000)
+
+            // Rawi is a quality enhancement, not a hard dependency. Probe it once.
+            // If the device/runtime rejects the Java ORT bridge, narration continues
+            // with Nabra instead of aborting the entire audiobook.
+            diacritizer = createRawiOrNull()
 
             chunks.forEachIndexed { index, chunk ->
                 if (cancelled.get()) throw JobCancelledException()
@@ -129,7 +136,7 @@ class AudiobookService : Service() {
             updateNotification("Generation cancelled", 0, false)
         } catch (t: Throwable) {
             writer?.abort()
-            sendFailed(t.message ?: t.javaClass.simpleName)
+            sendFailed(errorSummary(t))
             updateNotification("Generation failed", 0, false)
         } finally {
             runCatching { diacritizer?.close() }
@@ -141,9 +148,21 @@ class AudiobookService : Service() {
         }
     }
 
+    private fun createRawiOrNull(): RawiDiacritizer? {
+        val candidate = runCatching { RawiDiacritizer(this) }.getOrNull() ?: return null
+        return runCatching {
+            // Force both the Java bridge and native session to initialize now.
+            candidate.prepare("الصوت العربي الطبيعي يحتاج إلى نطق واضح.")
+            candidate
+        }.getOrElse {
+            runCatching { candidate.close() }
+            null
+        }
+    }
+
     private fun renderChunk(
         tts: OfflineTts,
-        diacritizer: RawiDiacritizer,
+        diacritizer: RawiDiacritizer?,
         writer: M4aWriter,
         text: String,
         speed: Float,
@@ -155,8 +174,11 @@ class AudiobookService : Service() {
 
         try {
             // Nabra-82M has one actual speaker: af_msa / sid 0. Quality is
-            // improved by feeding it context-aware tashkeel, not fake speaker IDs.
-            val prepared = runCatching { diacritizer.prepare(cleaned) }.getOrElse { cleaned }
+            // improved by context-aware tashkeel when Rawi is available, while
+            // Nabra remains fully usable if Rawi cannot initialize on a device.
+            val prepared = diacritizer?.let {
+                runCatching { it.prepare(cleaned) }.getOrElse { cleaned }
+            } ?: cleaned
             val audio = tts.generate(prepared, 0, speed)
             require(audio.samples.isNotEmpty()) { "Arabic voice engine returned empty audio." }
             writer.writeFloat(audio.samples)
@@ -211,6 +233,17 @@ class AudiobookService : Service() {
         destination.mkdirs()
         for (name in children) {
             copyAssetRecursive("$assetPath/$name", File(destination, name))
+        }
+    }
+
+    private fun errorSummary(t: Throwable): String {
+        var root = t
+        while (root.cause != null && root.cause !== root) root = root.cause!!
+        val rootMessage = root.message?.takeIf { it.isNotBlank() }
+        return if (rootMessage != null) {
+            "${root.javaClass.simpleName}: $rootMessage"
+        } else {
+            root.javaClass.name
         }
     }
 
