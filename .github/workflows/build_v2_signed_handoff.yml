@@ -1,0 +1,219 @@
+name: Build LATIF Audiobook AI v2 Signed Handoff
+
+on:
+  push:
+    branches:
+      - latif-audiobook-v2-nabra
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage source
+        run: |
+          set -euo pipefail
+          rm -rf standalone-android handoff public-release
+          cp -a v2-src/standalone-android standalone-android
+          mkdir -p handoff public-release
+          test -f standalone-android/app/src/main/AndroidManifest.xml
+          test -f standalone-android/app/build.gradle.kts
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Download embedded Arabic model and runtime
+        working-directory: standalone-android
+        run: |
+          set -euo pipefail
+          mkdir -p app/libs app/src/main/assets/nabra-82m
+
+          curl -L --fail --retry 5 --retry-delay 3 \
+            -o app/libs/sherpa-onnx-1.13.8.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
+          echo "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  app/libs/sherpa-onnx-1.13.8.aar" | sha256sum -c -
+
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/nabra-82m/model.fp16.onnx \
+            'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/model.fp16.onnx?download=true'
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/nabra-82m/tokens.txt \
+            'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/tokens.txt?download=true'
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/nabra-82m/voices.bin \
+            'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/voices.bin?download=true'
+
+          curl -L --fail --retry 5 --retry-delay 3 \
+            -o /tmp/piper-data.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
+          mkdir -p /tmp/piper-data
+          tar -xjf /tmp/piper-data.tar.bz2 -C /tmp/piper-data
+          cp -a /tmp/piper-data/vits-piper-en_US-amy-low/espeak-ng-data app/src/main/assets/nabra-82m/
+
+          test -s app/src/main/assets/nabra-82m/model.fp16.onnx
+          test -s app/src/main/assets/nabra-82m/tokens.txt
+          test -s app/src/main/assets/nabra-82m/voices.bin
+          test -d app/src/main/assets/nabra-82m/espeak-ng-data
+
+      - name: Snapshot complete source including model
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/LATIF-AUDIOBOOK-AI-v2.0.1-SOURCE
+          cp -a standalone-android /tmp/LATIF-AUDIOBOOK-AI-v2.0.1-SOURCE
+          cat > /tmp/LATIF-AUDIOBOOK-AI-v2.0.1-SOURCE/MODEL-MANIFEST.txt <<'EOF'
+          LATIF AUDIOBOOK AI v2.0.1 MODEL MANIFEST
+          Engine: sherpa-onnx 1.13.8
+          Model: marwanelamami/nabra-82m-sherpa-onnx
+          Main weight: app/src/main/assets/nabra-82m/model.fp16.onnx
+          Tokens: app/src/main/assets/nabra-82m/tokens.txt
+          Voice data: app/src/main/assets/nabra-82m/voices.bin
+          Embedded phonemizer data: app/src/main/assets/nabra-82m/espeak-ng-data
+          Runtime AAR: app/libs/sherpa-onnx-1.13.8.aar
+          Package: com.latif.audiobook.offline
+          Version: 2.0.1 (versionCode 3)
+          EOF
+          (
+            cd /tmp/LATIF-AUDIOBOOK-AI-v2.0.1-SOURCE
+            find . -type f -not -name SOURCE-SHA256SUMS.txt -print0 | sort -z | xargs -0 sha256sum > SOURCE-SHA256SUMS.txt
+          )
+          tar -C /tmp -czf handoff/LATIF-AUDIOBOOK-AI-v2.0.1-FULL-SOURCE-WITH-MODEL.tar.gz LATIF-AUDIOBOOK-AI-v2.0.1-SOURCE
+          cp handoff/LATIF-AUDIOBOOK-AI-v2.0.1-FULL-SOURCE-WITH-MODEL.tar.gz public-release/
+
+      - name: Generate permanent release signing key
+        run: |
+          set -euo pipefail
+          umask 077
+          STORE_PASS="$(openssl rand -hex 18)"
+          printf '%s' "$STORE_PASS" > /tmp/latif-store-pass
+          keytool -genkeypair \
+            -keystore handoff/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks \
+            -storetype JKS \
+            -storepass "$STORE_PASS" \
+            -keypass "$STORE_PASS" \
+            -alias latif-audiobook-release \
+            -keyalg RSA -keysize 4096 -validity 10000 \
+            -dname "CN=LATIF AUDIOBOOK AI, OU=LATIF, O=LATIF, L=Abu Dhabi, C=AE"
+          keytool -exportcert -rfc \
+            -keystore handoff/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks \
+            -storepass "$STORE_PASS" \
+            -alias latif-audiobook-release \
+            -file handoff/LATIF-AUDIOBOOK-AI-SIGNING-CERTIFICATE.pem
+          keytool -list -v \
+            -keystore handoff/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks \
+            -storepass "$STORE_PASS" \
+            -alias latif-audiobook-release > handoff/LATIF-AUDIOBOOK-AI-SIGNING-KEY-DETAILS.txt
+          cat > handoff/KEEP-THIS-KEY-PRIVATE.txt <<EOF
+          LATIF AUDIOBOOK AI — PERMANENT ANDROID SIGNING KEY
+
+          Keystore: LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks
+          Alias: latif-audiobook-release
+          Store password: $STORE_PASS
+          Key password: $STORE_PASS
+          Key algorithm: RSA 4096
+          Validity: 10000 days
+
+          IMPORTANT:
+          This keystore and password are required to publish installable upgrades over v2.0.1 and later.
+          Keep multiple private backups. Never commit this JKS or password to a public repository.
+          EOF
+          chmod 600 handoff/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks handoff/KEEP-THIS-KEY-PRIVATE.txt
+
+      - name: Compile and build unsigned release
+        working-directory: standalone-android
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace :app:compileReleaseKotlin
+          gradle --no-daemon --stacktrace :app:assembleRelease
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Align, sign, verify and preserve manifests
+        run: |
+          set -euo pipefail
+          STORE_PASS="$(cat /tmp/latif-store-pass)"
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          "$BT/zipalign" -p -f 4 \
+            standalone-android/app/build/outputs/apk/release/app-release-unsigned.apk \
+            /tmp/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-aligned.apk
+          "$BT/apksigner" sign \
+            --ks handoff/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks \
+            --ks-key-alias latif-audiobook-release \
+            --ks-pass "pass:$STORE_PASS" \
+            --key-pass "pass:$STORE_PASS" \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out handoff/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-SIGNED.apk \
+            /tmp/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-aligned.apk
+          "$BT/apksigner" verify --verbose --print-certs \
+            handoff/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-SIGNED.apk \
+            | tee handoff/LATIF-AUDIOBOOK-AI-APK-SIGNATURE.txt
+          "$BT/zipalign" -c -v 4 handoff/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-SIGNED.apk \
+            > handoff/LATIF-AUDIOBOOK-AI-ZIPALIGN-VERIFY.txt
+          unzip -t handoff/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-SIGNED.apk \
+            > handoff/LATIF-AUDIOBOOK-AI-ZIP-INTEGRITY.txt
+          cp standalone-android/app/src/main/AndroidManifest.xml handoff/AndroidManifest.xml
+          if command -v apkanalyzer >/dev/null 2>&1; then
+            apkanalyzer manifest print handoff/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-SIGNED.apk > handoff/FINAL-APK-MANIFEST.xml
+          else
+            cp handoff/AndroidManifest.xml handoff/FINAL-APK-MANIFEST.xml
+          fi
+          sha256sum \
+            handoff/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-SIGNED.apk \
+            handoff/LATIF-AUDIOBOOK-AI-v2.0.1-FULL-SOURCE-WITH-MODEL.tar.gz \
+            handoff/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks \
+            handoff/LATIF-AUDIOBOOK-AI-SIGNING-CERTIFICATE.pem \
+            handoff/AndroidManifest.xml \
+            > handoff/SHA256SUMS.txt
+          cp handoff/LATIF-AUDIOBOOK-AI-v2.0.1-NABRA-SIGNED.apk public-release/
+          cp handoff/LATIF-AUDIOBOOK-AI-SIGNING-CERTIFICATE.pem public-release/
+          cp handoff/LATIF-AUDIOBOOK-AI-APK-SIGNATURE.txt public-release/
+          cp handoff/AndroidManifest.xml public-release/
+          cp handoff/FINAL-APK-MANIFEST.xml public-release/
+          cp handoff/SHA256SUMS.txt public-release/
+
+      - name: Create private future-upgrade vault
+        run: |
+          set -euo pipefail
+          cd handoff
+          zip -0 -r ../LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT.zip .
+          cd ..
+          sha256sum LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT.zip > LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT
+          path: |
+            LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT.zip
+            LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT.zip.sha256
+          retention-days: 90
+
+      - name: Publish public signed release without private key
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="latif-audiobook-v2.0.1-permanent-signature-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" public-release/* \
+            --target "$GITHUB_SHA" \
+            --title "LATIF Audiobook AI v2.0.1 · Permanent Signature" \
+            --notes "Production handoff build. APK is signed with the new permanent LATIF Audiobook AI release certificate. The private keystore is deliberately NOT published in this public GitHub release; it is only in the private handoff artifact delivered to the owner. Future upgrades must use the same keystore."
