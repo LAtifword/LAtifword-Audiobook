@@ -1,6 +1,11 @@
 name: Publish LATIF Audiobook AI v2.1.1 Signed APK
 
 on:
+  push:
+    branches:
+      - latif-audiobook-v2.1-nabra-voice-profiles
+    paths:
+      - .github/workflows/publish_v2_1_1_signed.yml
   workflow_dispatch:
 
 permissions:
