@@ -1,0 +1,137 @@
+name: Build LATIF Audiobook AI v2.1 Nabra + Rawi Unsigned
+
+on:
+  push:
+    branches:
+      - latif-audiobook-v2.1-nabra-voice-profiles
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage Android source
+        run: |
+          set -euxo pipefail
+          rm -rf standalone-android
+          cp -a v2-src/standalone-android standalone-android
+          test -f standalone-android/app/src/main/java/com/latif/audiobook/offline/RawiDiacritizer.kt
+          test -f standalone-android/app/src/main/java/com/latif/audiobook/offline/NarrationProfile.kt
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Download embedded neural models and runtime
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          mkdir -p app/libs app/src/main/assets/nabra-82m app/src/main/assets/rawi-diacritizer
+
+          curl -L --fail --retry 5 --retry-delay 3 \
+            -o app/libs/sherpa-onnx-1.13.8.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
+          echo "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  app/libs/sherpa-onnx-1.13.8.aar" | sha256sum -c -
+
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/nabra-82m/model.fp16.onnx \
+            'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/model.fp16.onnx?download=true'
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/nabra-82m/tokens.txt \
+            'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/tokens.txt?download=true'
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/nabra-82m/voices.bin \
+            'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/voices.bin?download=true'
+
+          curl -L --fail --retry 5 --retry-delay 3 \
+            -o /tmp/piper-ar-data.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
+          mkdir -p /tmp/piper-ar-data
+          tar -xjf /tmp/piper-ar-data.tar.bz2 -C /tmp/piper-ar-data
+          cp -a /tmp/piper-ar-data/vits-piper-en_US-amy-low/espeak-ng-data app/src/main/assets/nabra-82m/
+
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/rawi-diacritizer/rawi_ensemble.int8.onnx \
+            'https://huggingface.co/TigreGotico/rawi-ensemble/resolve/main/rawi_ensemble.int8.onnx?download=true'
+          curl -L --fail --retry 8 --retry-delay 5 \
+            -o app/src/main/assets/rawi-diacritizer/vocab.json \
+            'https://huggingface.co/TigreGotico/rawi-ensemble/resolve/main/vocab.json?download=true'
+
+          test -s app/src/main/assets/nabra-82m/model.fp16.onnx
+          test -s app/src/main/assets/nabra-82m/tokens.txt
+          test -s app/src/main/assets/nabra-82m/voices.bin
+          test -d app/src/main/assets/nabra-82m/espeak-ng-data
+          test "$(stat -c%s app/src/main/assets/rawi-diacritizer/rawi_ensemble.int8.onnx)" -gt 4000000
+          test -s app/src/main/assets/rawi-diacritizer/vocab.json
+          du -sh app/src/main/assets/nabra-82m app/src/main/assets/rawi-diacritizer
+
+      - name: Validate Rawi neural tashkeel model
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          python -m pip install --quiet onnxruntime numpy
+          python - <<'PY'
+          import json, re, unicodedata
+          import numpy as np
+          import onnxruntime as ort
+          from pathlib import Path
+
+          root = Path('app/src/main/assets/rawi-diacritizer')
+          vocab = json.loads((root/'vocab.json').read_text(encoding='utf-8'))
+          c2i = vocab['char_to_idx']
+          d2i = vocab['diac_to_idx']
+          i2d = {int(v): k for k, v in d2i.items()}
+          unk = c2i.get('<UNK>', c2i.get('<unk>', c2i.get('UNK', 0)))
+          text = 'اللغة العربية جميلة والصوت الطبيعي يحتاج إلى تشكيل صحيح.'
+          nfd = unicodedata.normalize('NFD', text)
+          chars = [c for c in nfd if unicodedata.category(c) not in ('Mn','Mc','Me','So')]
+          ids = np.asarray([[c2i.get(c, unk) for c in chars]], dtype=np.int64)
+          sess = ort.InferenceSession(str(root/'rawi_ensemble.int8.onnx'), providers=['CPUExecutionProvider'])
+          out = sess.run(None, {'input': ids})[0][0]
+          result = ''.join(c + (i2d.get(int(cls), '') if int(cls) else '') for c, cls in zip(chars, out))
+          result = unicodedata.normalize('NFC', result)
+          print('Rawi sample:', result)
+          if not re.search(r'[\u064B-\u065F\u0670]', result):
+              raise SystemExit('Rawi validation failed: no Arabic diacritics produced')
+          PY
+
+      - name: Compile and build aligned unsigned release
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          gradle --no-daemon --stacktrace :app:compileReleaseKotlin
+          gradle --no-daemon --stacktrace :app:assembleRelease
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+          mkdir -p ../release
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            ../release/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 \
+            ../release/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk
+          tar -czf ../release/LATIF-AUDIOBOOK-AI-v2.1.0-FULL-SOURCE-WITH-MODELS.tar.gz .
+          sha256sum ../release/* | tee ../release/SHA256SUMS.txt
+          ls -lh ../release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-UNSIGNED
+          path: release/*
+          retention-days: 30

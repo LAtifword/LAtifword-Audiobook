@@ -1,0 +1,77 @@
+name: Build LATIF Audiobook AI v2.1 APK only
+
+on:
+  push:
+    branches:
+      - latif-audiobook-v2.1-nabra-voice-profiles
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage source
+        run: |
+          set -euxo pipefail
+          rm -rf standalone-android
+          cp -a v2-src/standalone-android standalone-android
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Bundle Nabra and Rawi models
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          mkdir -p app/libs app/src/main/assets/nabra-82m app/src/main/assets/rawi-diacritizer
+          curl -L --fail --retry 5 -o app/libs/sherpa-onnx-1.13.8.aar https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
+          echo "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  app/libs/sherpa-onnx-1.13.8.aar" | sha256sum -c -
+          curl -L --fail --retry 8 -o app/src/main/assets/nabra-82m/model.fp16.onnx 'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/model.fp16.onnx?download=true'
+          curl -L --fail --retry 8 -o app/src/main/assets/nabra-82m/tokens.txt 'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/tokens.txt?download=true'
+          curl -L --fail --retry 8 -o app/src/main/assets/nabra-82m/voices.bin 'https://huggingface.co/marwanelamami/nabra-82m-sherpa-onnx/resolve/main/voices.bin?download=true'
+          curl -L --fail --retry 5 -o /tmp/piper.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
+          mkdir -p /tmp/piper && tar -xjf /tmp/piper.tar.bz2 -C /tmp/piper
+          cp -a /tmp/piper/vits-piper-en_US-amy-low/espeak-ng-data app/src/main/assets/nabra-82m/
+          curl -L --fail --retry 8 -o app/src/main/assets/rawi-diacritizer/rawi_ensemble.int8.onnx 'https://huggingface.co/TigreGotico/rawi-ensemble/resolve/main/rawi_ensemble.int8.onnx?download=true'
+          curl -L --fail --retry 8 -o app/src/main/assets/rawi-diacritizer/vocab.json 'https://huggingface.co/TigreGotico/rawi-ensemble/resolve/main/vocab.json?download=true'
+          test -s app/src/main/assets/nabra-82m/model.fp16.onnx
+          test -s app/src/main/assets/rawi-diacritizer/rawi_ensemble.int8.onnx
+
+      - name: Build aligned APK
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          gradle --no-daemon :app:assembleRelease
+          mkdir -p ../apk-only
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 \
+            app/build/outputs/apk/release/app-release-unsigned.apk \
+            ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk >/dev/null
+          sha256sum ../apk-only/*.apk > ../apk-only/SHA256SUMS.txt
+          ls -lh ../apk-only/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-AUDIOBOOK-AI-v2.1.0-APK-ONLY
+          path: apk-only/*
+          retention-days: 30
+          compression-level: 0

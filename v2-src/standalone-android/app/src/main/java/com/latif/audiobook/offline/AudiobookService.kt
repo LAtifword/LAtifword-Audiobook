@@ -37,17 +37,25 @@ class AudiobookService : Service() {
 
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "LATIF Audiobook" }
         val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME)
-        val speed = intent.getFloatExtra(EXTRA_SPEED, 0.94f).coerceIn(0.78f, 1.16f)
+        val profile = NarrationProfile.fromOrdinal(intent.getIntExtra(EXTRA_PROFILE, NarrationProfile.LITERARY.ordinal))
+        val speed = intent.getFloatExtra(EXTRA_SPEED, profile.defaultSpeed).coerceIn(0.82f, 1.08f)
 
         running = true
         cancelled.set(false)
-        startForeground(NOTIFICATION_ID, notification("Preparing Arabic studio…", 0, true))
+        startForeground(NOTIFICATION_ID, notification("Preparing high-quality Arabic narration…", 0, true))
 
-        Thread { runJob(uri, rawText, title, displayName, speed) }.start()
+        Thread { runJob(uri, rawText, title, displayName, profile, speed) }.start()
         return START_NOT_STICKY
     }
 
-    private fun runJob(uri: Uri?, rawText: String?, title: String, displayName: String?, speed: Float) {
+    private fun runJob(
+        uri: Uri?,
+        rawText: String?,
+        title: String,
+        displayName: String?,
+        profile: NarrationProfile,
+        speed: Float,
+    ) {
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LatifAudiobook:render").apply {
             setReferenceCounted(false)
@@ -56,14 +64,18 @@ class AudiobookService : Service() {
 
         var tts: OfflineTts? = null
         var writer: M4aWriter? = null
+        var diacritizer: RawiDiacritizer? = null
         try {
             sendProgress(1, "Reading book…")
             val text = rawText?.takeIf { it.isNotBlank() }
                 ?: BookParser.readText(this, requireNotNull(uri), displayName)
             require(text.length >= 20) { "The selected book contains no readable text." }
 
-            sendProgress(3, "Preparing literary narration…")
-            val chunks = BookParser.splitForNarration(text, 245)
+            sendProgress(3, "Preparing literary Arabic…")
+            // Nabra has a 510-phoneme style-row cap. Keep chunks sentence-aware and
+            // moderately long for prosody, then split automatically if a hard case
+            // still exceeds the model limit.
+            val chunks = BookParser.splitForNarration(text, 320)
             require(chunks.isNotEmpty()) { "No narration sections were created." }
 
             val dataDir = ensureAssetTreeOnDisk("nabra-82m/espeak-ng-data")
@@ -81,27 +93,23 @@ class AudiobookService : Service() {
                 numThreads = 4,
             )
 
-            sendProgress(5, "Loading Nabra Arabic Studio voice…")
+            sendProgress(5, "Loading Rawi tashkeel + Nabra voice…")
+            diacritizer = RawiDiacritizer(this)
             tts = OfflineTts(assetManager = assets, config = config)
             val sampleRate = tts.sampleRate()
-            writer = M4aWriter(this, title, sampleRate)
+            writer = M4aWriter(this, title, sampleRate, bitrate = 96_000)
 
             chunks.forEachIndexed { index, chunk ->
                 if (cancelled.get()) throw JobCancelledException()
                 val p = 5 + (((index.toDouble() / chunks.size) * 92.0).toInt())
-                sendProgress(p, "Narrating ${index + 1} / ${chunks.size}")
+                sendProgress(p, "Narrating ${index + 1} / ${chunks.size} · ${profile.labelAr}")
 
-                val prepared = ArabicText.prepareForNarration(chunk)
-                val audio = tts.generate(prepared, 0, speed)
-                require(audio.samples.isNotEmpty()) {
-                    "Arabic voice engine returned empty audio at section ${index + 1}."
-                }
-                writer.writeFloat(audio.samples)
+                renderChunk(tts, diacritizer, writer, chunk, speed)
 
                 val pauseMs = when {
-                    chunk.endsWith("؟") || chunk.endsWith("!") -> 115
-                    chunk.endsWith(".") || chunk.endsWith("…") || chunk.endsWith("؛") -> 95
-                    else -> 55
+                    chunk.endsWith("؟") || chunk.endsWith("!") -> profile.questionPauseMs
+                    chunk.endsWith(".") || chunk.endsWith("…") || chunk.endsWith("؛") -> profile.sentencePauseMs
+                    else -> profile.softPauseMs
                 }
                 writer.writeSilence(pauseMs)
             }
@@ -111,6 +119,7 @@ class AudiobookService : Service() {
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_LAST_OUTPUT, out.toString())
                 .putString(KEY_LAST_TITLE, title)
+                .putInt(KEY_LAST_PROFILE, profile.ordinal)
                 .apply()
             sendComplete(out, title)
             updateNotification("Audiobook ready", 100, false)
@@ -123,12 +132,60 @@ class AudiobookService : Service() {
             sendFailed(t.message ?: t.javaClass.simpleName)
             updateNotification("Generation failed", 0, false)
         } finally {
+            runCatching { diacritizer?.close() }
             runCatching { tts?.release() }
             runCatching { wakeLock?.release() }
             running = false
             stopForeground(false)
             stopSelf()
         }
+    }
+
+    private fun renderChunk(
+        tts: OfflineTts,
+        diacritizer: RawiDiacritizer,
+        writer: M4aWriter,
+        text: String,
+        speed: Float,
+        depth: Int = 0,
+    ) {
+        if (cancelled.get()) throw JobCancelledException()
+        val cleaned = ArabicText.prepareForNarration(text)
+        if (cleaned.isBlank()) return
+
+        try {
+            // Nabra-82M has one actual speaker: af_msa / sid 0. Quality is
+            // improved by feeding it context-aware tashkeel, not fake speaker IDs.
+            val prepared = runCatching { diacritizer.prepare(cleaned) }.getOrElse { cleaned }
+            val audio = tts.generate(prepared, 0, speed)
+            require(audio.samples.isNotEmpty()) { "Arabic voice engine returned empty audio." }
+            writer.writeFloat(audio.samples)
+        } catch (t: Throwable) {
+            if (depth >= 3 || cleaned.length < 90) throw t
+            val split = splitNearMiddle(cleaned)
+            if (split.first.isBlank() || split.second.isBlank()) throw t
+            renderChunk(tts, diacritizer, writer, split.first, speed, depth + 1)
+            writer.writeSilence(35)
+            renderChunk(tts, diacritizer, writer, split.second, speed, depth + 1)
+        }
+    }
+
+    private fun splitNearMiddle(text: String): Pair<String, String> {
+        val middle = text.length / 2
+        val punctuation = listOf('،', '؛', '.', '؟', '!', '…')
+        var best = -1
+        var distance = Int.MAX_VALUE
+        for (i in text.indices) {
+            if (text[i].isWhitespace() || text[i] in punctuation) {
+                val d = kotlin.math.abs(i - middle)
+                if (d < distance) {
+                    best = i
+                    distance = d
+                }
+            }
+        }
+        if (best <= 20 || best >= text.length - 20) best = middle
+        return text.substring(0, best).trim() to text.substring(best).trim()
     }
 
     private fun ensureAssetTreeOnDisk(assetPath: String): File {
@@ -190,7 +247,7 @@ class AudiobookService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("LATIF Audiobook AI · Arabic Studio")
+            .setContentTitle("LATIF Audiobook AI · Nabra + Rawi")
             .setContentText(message)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pending)
@@ -217,12 +274,14 @@ class AudiobookService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_DISPLAY_NAME = "displayName"
         const val EXTRA_SPEED = "speed"
+        const val EXTRA_PROFILE = "profile"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_OUTPUT_URI = "outputUri"
         const val PREFS = "latif_audiobook"
         const val KEY_LAST_OUTPUT = "lastOutput"
         const val KEY_LAST_TITLE = "lastTitle"
+        const val KEY_LAST_PROFILE = "lastProfile"
         private const val CHANNEL_ID = "latif_audiobook_render"
         private const val NOTIFICATION_ID = 7002
     }
