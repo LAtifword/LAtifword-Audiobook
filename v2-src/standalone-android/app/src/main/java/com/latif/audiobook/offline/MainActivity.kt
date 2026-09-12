@@ -27,6 +27,8 @@ class MainActivity : Activity() {
     private lateinit var bookMeta: TextView
     private lateinit var statusText: TextView
     private lateinit var progress: ProgressBar
+    private lateinit var profileSpinner: Spinner
+    private lateinit var profileDescription: TextView
     private lateinit var speedLabel: TextView
     private lateinit var speedSeek: SeekBar
     private lateinit var generateButton: Button
@@ -47,7 +49,7 @@ class MainActivity : Activity() {
                 }
                 AudiobookService.ACTION_COMPLETE -> {
                     progress.progress = 100
-                    statusText.text = "Audiobook ready — saved in Music/LATIF Audiobooks"
+                    statusText.text = "تم إنشاء الكتاب الصوتي وحفظه في Music/LATIF Audiobooks"
                     generateButton.isEnabled = true
                     cancelButton.visibility = View.GONE
                     playButton.visibility = View.VISIBLE
@@ -56,7 +58,7 @@ class MainActivity : Activity() {
                 AudiobookService.ACTION_FAILED -> {
                     val msg = intent.getStringExtra(AudiobookService.EXTRA_MESSAGE).orEmpty()
                     progress.visibility = View.GONE
-                    statusText.text = if (msg == "Cancelled") "Generation cancelled" else "Generation stopped: $msg"
+                    statusText.text = if (msg == "Cancelled") "تم إلغاء التوليد" else "توقف التوليد: $msg"
                     generateButton.isEnabled = true
                     cancelButton.visibility = View.GONE
                 }
@@ -109,7 +111,7 @@ class MainActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
         })
         root.addView(TextView(this).apply {
-            text = "Arabic Studio · Natural MSA neural narration"
+            text = "Arabic Studio · Nabra + Rawi Neural Tashkeel"
             setTextColor(Color.rgb(175, 168, 205))
             textSize = 14f
             setPadding(0, dp(4), 0, dp(18))
@@ -117,15 +119,16 @@ class MainActivity : Activity() {
 
         root.addView(card().apply {
             addView(TextView(this@MainActivity).apply {
-                text = "NABRA ARABIC STUDIO\n82M StyleTTS2/Kokoro-family model · FP16 reference-quality weights · 24 kHz · fully local"
+                text = "HIGH QUALITY ARABIC PIPELINE\nRawi neural diacritization → Nabra-82M FP16 → 24 kHz → AAC 96 kbps"
                 setTextColor(Color.rgb(213, 202, 255))
                 textSize = 14f
                 typeface = Typeface.DEFAULT_BOLD
             })
             addView(TextView(this@MainActivity).apply {
-                text = "No account · no API · no server · no Termux · book text stays on the phone"
+                text = "التشكيل يتم محلياً قبل النطق لتحسين الحركات ومخارج الكلمات. لا API ولا خادم ولا Termux."
                 setTextColor(Color.rgb(145, 146, 165))
                 textSize = 12f
+                textDirection = View.TEXT_DIRECTION_RTL
                 setPadding(0, dp(8), 0, 0)
             })
         })
@@ -167,28 +170,45 @@ class MainActivity : Activity() {
         root.addView(sectionTitle("2  NARRATION"))
         root.addView(card().apply {
             addView(TextView(this@MainActivity).apply {
-                text = "Studio Narrator · Female MSA"
+                text = "Nabra af_msa · Natural Arabic narrator"
                 setTextColor(Color.WHITE)
                 textSize = 16f
                 typeface = Typeface.DEFAULT_BOLD
             })
             addView(TextView(this@MainActivity).apply {
-                text = "One coherent Arabic narrator instead of ten weak presets. Tuned for books, essays and long-form narration."
+                text = "صوت Nabra الحقيقي الوحيد مع تشكيل Rawi العصبي. الأوضاع التالية تغيّر أداء القراءة والإيقاع، لا تستعمل أصواتاً وهمية."
                 setTextColor(Color.rgb(150, 151, 170))
                 textSize = 12f
-                setPadding(0, dp(6), 0, 0)
+                textDirection = View.TEXT_DIRECTION_RTL
+                setPadding(0, dp(6), 0, dp(10))
             })
+
+            profileSpinner = Spinner(this@MainActivity).apply {
+                adapter = ArrayAdapter(
+                    this@MainActivity,
+                    android.R.layout.simple_spinner_dropdown_item,
+                    NarrationProfile.entries.map { it.labelAr }
+                )
+            }
+            addView(profileSpinner, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(54)))
+
+            profileDescription = TextView(this@MainActivity).apply {
+                setTextColor(Color.rgb(174, 176, 194))
+                textSize = 12f
+                textDirection = View.TEXT_DIRECTION_RTL
+                setPadding(0, dp(8), 0, 0)
+            }
+            addView(profileDescription)
         })
 
         speedLabel = TextView(this).apply {
-            text = "Narration pace  0.94×"
             setTextColor(Color.rgb(205, 205, 218))
             textSize = 14f
+            setPadding(0, dp(10), 0, 0)
         }
         root.addView(speedLabel)
         speedSeek = SeekBar(this).apply {
-            max = 38
-            progress = 16
+            max = 26
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     speedLabel.text = String.format(Locale.US, "Narration pace  %.2f×", speedValue())
@@ -198,6 +218,18 @@ class MainActivity : Activity() {
             })
         }
         root.addView(speedSeek)
+
+        profileSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val profile = NarrationProfile.fromOrdinal(position)
+                profileDescription.text = profile.descriptionAr
+                setSpeedValue(profile.defaultSpeed)
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        profileSpinner.setSelection(NarrationProfile.LITERARY.ordinal)
+        profileDescription.text = NarrationProfile.LITERARY.descriptionAr
+        setSpeedValue(NarrationProfile.LITERARY.defaultSpeed)
 
         root.addView(sectionTitle("3  CREATE"))
         generateButton = primaryButton("CREATE COMPLETE AUDIOBOOK").apply { setOnClickListener { startGeneration() } }
@@ -215,7 +247,7 @@ class MainActivity : Activity() {
         root.addView(progress, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(8)).apply { topMargin = dp(8) })
 
         statusText = TextView(this).apply {
-            text = "Ready. Arabic neural engine is inside the app."
+            text = "Ready. Rawi + Nabra high-quality Arabic pipeline is local."
             setTextColor(Color.rgb(174, 176, 194))
             textSize = 13f
             setPadding(0, dp(10), 0, dp(12))
@@ -230,7 +262,7 @@ class MainActivity : Activity() {
         root.addView(outRow)
 
         root.addView(TextView(this).apply {
-            text = "Output: Music/LATIF Audiobooks · M4A · 24 kHz source narration"
+            text = "Output: Music/LATIF Audiobooks · M4A · 24 kHz source · AAC 96 kbps"
             setTextColor(Color.rgb(105, 108, 125))
             textSize = 12f
             setPadding(0, dp(24), 0, 0)
@@ -270,7 +302,7 @@ class MainActivity : Activity() {
                     runOnUiThread {
                         bookMeta.text = "${selectedDisplayName ?: "Book"} • ${"%,d".format(words)} words • ${text.length} characters"
                         textInput.setText(text.take(3500))
-                        statusText.text = "Book loaded. Full source will be narrated."
+                        statusText.text = "Book loaded. Full source will be diacritized and narrated locally."
                     }
                 }
                 .onFailure { e -> runOnUiThread {
@@ -287,22 +319,33 @@ class MainActivity : Activity() {
             Toast.makeText(this, "Choose a book or paste Arabic text first.", Toast.LENGTH_SHORT).show(); return
         }
         val title = titleInput.text.toString().trim().ifBlank { selectedDisplayName?.substringBeforeLast('.') ?: "LATIF Audiobook" }
+        val profile = NarrationProfile.fromOrdinal(profileSpinner.selectedItemPosition)
         val intent = Intent(this, AudiobookService::class.java).apply {
             if (uri != null) putExtra(AudiobookService.EXTRA_URI, uri.toString()) else putExtra(AudiobookService.EXTRA_RAW_TEXT, pasted)
             putExtra(AudiobookService.EXTRA_TITLE, title)
             putExtra(AudiobookService.EXTRA_DISPLAY_NAME, selectedDisplayName)
+            putExtra(AudiobookService.EXTRA_PROFILE, profile.ordinal)
             putExtra(AudiobookService.EXTRA_SPEED, speedValue())
         }
         progress.progress = 0; progress.visibility = View.VISIBLE
-        statusText.text = "Starting Nabra Arabic Studio…"
+        statusText.text = "Starting Rawi tashkeel + Nabra Arabic Studio…"
         generateButton.isEnabled = false; cancelButton.visibility = View.VISIBLE
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
     }
 
-    private fun speedValue(): Float = 0.78f + speedSeek.progress / 100f
+    private fun speedValue(): Float = 0.82f + speedSeek.progress / 100f
+
+    private fun setSpeedValue(value: Float) {
+        if (!::speedSeek.isInitialized) return
+        speedSeek.progress = (((value.coerceIn(0.82f, 1.08f) - 0.82f) * 100f).toInt()).coerceIn(0, speedSeek.max)
+        speedLabel.text = String.format(Locale.US, "Narration pace  %.2f×", speedValue())
+    }
 
     private fun restoreLastOutput() {
-        val raw = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE).getString(AudiobookService.KEY_LAST_OUTPUT, null)
+        val prefs = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE)
+        val raw = prefs.getString(AudiobookService.KEY_LAST_OUTPUT, null)
+        val profile = prefs.getInt(AudiobookService.KEY_LAST_PROFILE, NarrationProfile.LITERARY.ordinal)
+        if (::profileSpinner.isInitialized) profileSpinner.setSelection(profile.coerceIn(0, NarrationProfile.entries.lastIndex))
         if (!raw.isNullOrBlank()) { playButton.visibility = View.VISIBLE; shareButton.visibility = View.VISIBLE }
     }
 
