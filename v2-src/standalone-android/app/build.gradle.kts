@@ -11,8 +11,8 @@ android {
         applicationId = "com.latif.audiobook.offline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "2.0.1"
+        versionCode = 4
+        versionName = "2.1.0"
     }
 
     buildTypes {
@@ -32,6 +32,10 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            pickFirsts += setOf(
+                "**/libc++_shared.so",
+                "**/libonnxruntime.so"
+            )
         }
         resources {
             excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
@@ -47,4 +51,5 @@ dependencies {
     implementation(files("libs/sherpa-onnx-1.13.8.aar"))
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 }
