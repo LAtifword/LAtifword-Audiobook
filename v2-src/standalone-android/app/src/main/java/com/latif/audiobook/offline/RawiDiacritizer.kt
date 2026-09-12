@@ -16,9 +16,15 @@ import java.text.Normalizer
  * phonemizer must infer short vowels from the input. Rawi Ensemble restores
  * those marks before text reaches the TTS model. The model and vocab are
  * bundled in assets/rawi-diacritizer and never leave the device.
+ *
+ * Important: ONNX Runtime is initialized lazily. A broken or incompatible ORT
+ * bridge must never prevent the Nabra TTS engine from starting; callers can
+ * fall back to unvocalized text when Rawi is unavailable.
  */
 class RawiDiacritizer(private val context: Context) : AutoCloseable {
-    private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private val env: OrtEnvironment by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        OrtEnvironment.getEnvironment()
+    }
     private var session: OrtSession? = null
     private var charToIdx: Map<String, Long> = emptyMap()
     private var idxToDiac: Map<Long, String> = emptyMap()
@@ -57,7 +63,11 @@ class RawiDiacritizer(private val context: Context) : AutoCloseable {
         idxToDiac = diacs
 
         val options = OrtSession.SessionOptions()
-        session = env.createSession(model.absolutePath, options)
+        try {
+            session = env.createSession(model.absolutePath, options)
+        } finally {
+            options.close()
+        }
     }
 
     @Synchronized
