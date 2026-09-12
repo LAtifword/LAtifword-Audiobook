@@ -1,0 +1,42 @@
+name: Publish LATIF Audiobook AI v2.1.1 Signed APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download verified signed APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh run download 34723405617 \
+            --name LATIF-AUDIOBOOK-AI-v2.1.1-RUNTIME-FIX-SIGNED \
+            --dir release
+          test -s release/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-SIGNED.apk
+          test -s release/SIGNATURE-VERIFY.txt
+          test -s release/SHA256SUMS.txt
+
+      - name: Publish direct-install release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG='latif-audiobook-v2.1.1-runtime-fix'
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" \
+            release/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-SIGNED.apk \
+            release/SIGNATURE-VERIFY.txt \
+            release/SHA256SUMS.txt \
+            --target 773207203174f8bc4fd48829d8cc7a88ab29ae5f \
+            --title 'LATIF Audiobook AI v2.1.1 · Runtime Fix' \
+            --notes 'Signed Android hotfix for the ONNX Runtime startup failure seen as ai.onnxruntime.OrtEnvironment. Nabra initializes first; Rawi is now an optional quality enhancement and cannot block audiobook generation. Signed with the permanent LATIF release certificate so it can upgrade the existing installation.'
