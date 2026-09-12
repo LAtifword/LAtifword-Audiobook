@@ -1,4 +1,4 @@
-name: Build LATIF Audiobook AI v2.1 APK only
+name: Build LATIF Audiobook AI v2.1.1 APK only
 
 on:
   push:
@@ -56,22 +56,29 @@ jobs:
           test -s app/src/main/assets/nabra-82m/model.fp16.onnx
           test -s app/src/main/assets/rawi-diacritizer/rawi_ensemble.int8.onnx
 
-      - name: Build aligned APK
+      - name: Build and validate APK
         working-directory: standalone-android
         run: |
           set -euxo pipefail
-          gradle --no-daemon :app:assembleRelease
+          gradle --no-daemon :app:compileReleaseKotlin :app:assembleRelease
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libsherpa-onnx-jni.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libonnxruntime.so'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libonnxruntime4j_jni.so'
+          unzip -l "$APK" | grep -q 'assets/nabra-82m/model.fp16.onnx'
+          unzip -l "$APK" | grep -q 'assets/rawi-diacritizer/rawi_ensemble.int8.onnx'
           mkdir -p ../apk-only
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 \
-            app/build/outputs/apk/release/app-release-unsigned.apk \
-            ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk
-          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.0-NABRA-RAWI-ALIGNED-UNSIGNED.apk >/dev/null
+            "$APK" \
+            ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk >/dev/null
           sha256sum ../apk-only/*.apk > ../apk-only/SHA256SUMS.txt
           ls -lh ../apk-only/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LATIF-AUDIOBOOK-AI-v2.1.0-APK-ONLY
+          name: LATIF-AUDIOBOOK-AI-v2.1.1-RUNTIME-FIX-APK-ONLY
           path: apk-only/*
           retention-days: 30
           compression-level: 0
