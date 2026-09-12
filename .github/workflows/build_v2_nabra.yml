@@ -1,0 +1,13 @@
+name: Build LATIF Audiobook AI v2 Nabra
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  hold:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Release handoff workflow is maintained separately."

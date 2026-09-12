@@ -1,0 +1,89 @@
+name: Build LATIF Standalone Offline Audiobook APK
+
+on:
+  push:
+    branches:
+      - standalone-offline-audiobook
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct standalone Android source
+        run: |
+          set -euxo pipefail
+          cat offline-src/part* > /tmp/latif-source.b64
+          base64 -d /tmp/latif-source.b64 > /tmp/latif-source.zip
+          unzip -q /tmp/latif-source.zip
+          test -f standalone-android/app/build.gradle.kts
+          unzip -t /tmp/latif-source.zip >/dev/null
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Download embedded offline TTS runtime
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          mkdir -p app/libs app/src/main/assets
+          curl -L --retry 5 --retry-delay 3 \
+            -o app/libs/sherpa-onnx-1.13.8.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
+          echo "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  app/libs/sherpa-onnx-1.13.8.aar" | sha256sum -c -
+
+          curl -L --retry 5 --retry-delay 3 \
+            -o /tmp/supertonic.tar.bz2 \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2
+          tar -xjf /tmp/supertonic.tar.bz2 -C app/src/main/assets
+          test -f app/src/main/assets/sherpa-onnx-supertonic-3-tts-int8-2026-05-11/vector_estimator.int8.onnx
+          du -sh app/src/main/assets/sherpa-onnx-supertonic-3-tts-int8-2026-05-11
+
+      - name: Build signed installable APK
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          gradle --no-daemon --stacktrace :app:assembleDebug
+          mkdir -p ../release
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/LATIF-AUDIOBOOK-AI-OFFLINE-v1.0.0.apk
+          sha256sum ../release/LATIF-AUDIOBOOK-AI-OFFLINE-v1.0.0.apk | tee ../release/LATIF-AUDIOBOOK-AI-OFFLINE-v1.0.0.apk.sha256
+          unzip -t ../release/LATIF-AUDIOBOOK-AI-OFFLINE-v1.0.0.apk >/dev/null
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose ../release/LATIF-AUDIOBOOK-AI-OFFLINE-v1.0.0.apk
+          ls -lh ../release/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-AUDIOBOOK-AI-OFFLINE-APK
+          path: release/*
+          retention-days: 30
+
+      - name: Publish installable APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          TAG="latif-offline-v1.0.0-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" \
+            release/LATIF-AUDIOBOOK-AI-OFFLINE-v1.0.0.apk \
+            release/LATIF-AUDIOBOOK-AI-OFFLINE-v1.0.0.apk.sha256 \
+            --title "LATIF Audiobook AI Offline v1.0.0" \
+            --notes "Standalone Android audiobook generator. Fully local Supertonic 3 INT8 neural TTS, Arabic/English, 10 narrator voices, PDF/EPUB/DOCX/TXT input, foreground full-book generation, M4A output. No account, API, server, Termux, or Internet required after installation."
