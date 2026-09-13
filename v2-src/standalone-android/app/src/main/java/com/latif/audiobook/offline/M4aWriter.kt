@@ -60,7 +60,7 @@ class M4aWriter(
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 32_768)
         }
         codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -75,6 +75,14 @@ class M4aWriter(
             val s = (sample.coerceIn(-1f, 1f) * 32767f).roundToInt().toShort()
             bb.putShort(s)
         }
+        feed(pcm)
+    }
+
+    fun writePcm16(samples: ShortArray) {
+        if (samples.isEmpty()) return
+        val pcm = ByteArray(samples.size * 2)
+        val bb = ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN)
+        for (sample in samples) bb.putShort(sample)
         feed(pcm)
     }
 

@@ -11,8 +11,12 @@ android {
         applicationId = "com.latif.audiobook.offline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "2.1.1"
+        versionCode = 7
+        versionName = "3.0.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -32,9 +36,6 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
-            // sherpa-onnx 1.13.8 ships its own libonnxruntime.so. Keep a single
-            // copy in the APK so sherpa TTS and the Java ORT bridge share the
-            // same process-level runtime instead of loading duplicate SONAMEs.
             pickFirsts += setOf(
                 "**/libc++_shared.so",
                 "**/libonnxruntime.so"
@@ -46,17 +47,13 @@ android {
     }
 
     androidResources {
-        noCompress += listOf("onnx", "bin", "json")
+        // The neural weights are already binary-compressed and need random access/copy-once extraction.
+        noCompress += listOf("onnx", "bin", "json", "txt", "wav")
     }
 }
 
 dependencies {
-    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-
-    // v1.22.0 was incompatible with sherpa-onnx 1.13.8's bundled ONNX Runtime
-    // and caused OrtEnvironment to fail before narration began. Use the closest
-    // matching public Android Java/JNI bridge and keep Rawi optional at runtime.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 }

@@ -1,0 +1,48 @@
+name: Publish LATIF Audiobook AI v2.2.0 Nebula Release
+
+on:
+  push:
+    branches:
+      - latif-audiobook-v2.2-nebula-ui
+    paths:
+      - .github/workflows/publish_v2_2_nebula_release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified signed APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          gh run download 34736342382 \
+            --repo LAtifword/LAtifword-Audiobook \
+            --name LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-SIGNED \
+            --dir release
+          test -s release/LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-SIGNED.apk
+          test -s release/SIGNATURE-VERIFY.txt
+          test -s release/SHA256SUMS.txt
+          cat release/SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          TAG='latif-audiobook-v2.2.0-nebula'
+          gh release delete "$TAG" --repo LAtifword/LAtifword-Audiobook --yes || true
+          gh release create "$TAG" \
+            --repo LAtifword/LAtifword-Audiobook \
+            --target 8b137c6a3b8a8bee57934f4067d43c9af3f84253 \
+            --title 'LATIF Audiobook AI 2.2.0 — Nebula Manuscript' \
+            --notes 'Native Android redesign based on the Nebula Manuscript vision. Deep ink interface, Saffron Signal accent, Arabic editorial hierarchy, native voice-profile cards, local studio console and waveform, Nabra-82M FP16 + optional Rawi tashkeel, 24 kHz narration, AAC 96 kbps export, PDF/EPUB/DOCX/TXT ingestion. Signed and verified with the permanent LATIF release identity.' \
+            release/LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-SIGNED.apk \
+            release/SIGNATURE-VERIFY.txt \
+            release/SHA256SUMS.txt

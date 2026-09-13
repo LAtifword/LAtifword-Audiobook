@@ -1,9 +1,9 @@
-name: Build LATIF Audiobook AI v2.1.1 Signed Runtime Fix
+name: Build LATIF Audiobook AI v2.2.0 Nebula Manuscript
 
 on:
   push:
     branches:
-      - latif-audiobook-v2.1-nabra-voice-profiles
+      - latif-audiobook-v2.2-nebula-ui
   workflow_dispatch:
 
 permissions:
@@ -57,7 +57,7 @@ jobs:
           test -s app/src/main/assets/nabra-82m/model.fp16.onnx
           test -s app/src/main/assets/rawi-diacritizer/rawi_ensemble.int8.onnx
 
-      - name: Build and validate unsigned APK
+      - name: Compile and build release APK
         working-directory: standalone-android
         run: |
           set -euxo pipefail
@@ -72,8 +72,8 @@ jobs:
           mkdir -p ../apk-only
           "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 \
             "$APK" \
-            ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk
-          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 ../apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk >/dev/null
+            ../apk-only/LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-ALIGNED-UNSIGNED.apk
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 ../apk-only/LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-ALIGNED-UNSIGNED.apk >/dev/null
 
       - name: Sign with permanent LATIF release certificate
         env:
@@ -100,8 +100,8 @@ jobs:
           export LATIF_STORE_PASS="$STORE_PASS"
 
           BT="$ANDROID_HOME/build-tools/35.0.0"
-          UNSIGNED=apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-ALIGNED-UNSIGNED.apk
-          SIGNED=apk-only/LATIF-AUDIOBOOK-AI-v2.1.1-NABRA-RAWI-RUNTIME-FIX-SIGNED.apk
+          UNSIGNED=apk-only/LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-ALIGNED-UNSIGNED.apk
+          SIGNED=apk-only/LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-SIGNED.apk
 
           "$BT/apksigner" sign \
             --ks "$KEYSTORE" \
@@ -128,7 +128,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LATIF-AUDIOBOOK-AI-v2.1.1-RUNTIME-FIX-SIGNED
+          name: LATIF-AUDIOBOOK-AI-v2.2.0-NEBULA-SIGNED
           path: apk-only/*
           retention-days: 30
           compression-level: 0
