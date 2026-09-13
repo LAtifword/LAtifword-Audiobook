@@ -5,6 +5,7 @@ import ai.onnxruntime.OnnxValue
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
+import android.os.Build
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.IntBuffer
@@ -16,8 +17,12 @@ import kotlin.math.max
 /**
  * Fully local SILMA TTS v1 / F5-TTS ONNX runtime.
  *
- * The model is split into three ONNX graphs exported by DakeQQ/F5-TTS-ONNX:
- * preprocess -> iterative transformer denoising -> decoder/vocoder.
+ * v3.1 performance architecture:
+ *  - XNNPACK first for optimized ARM floating-point kernels.
+ *  - NNAPI second so Android may offload supported operators to GPU/NPU/DSP.
+ *  - Tuned ORT CPU fallback on every device.
+ *  - SessionOptions stay alive for the lifetime of the sessions.
+ *
  * No network call, account, API key or remote inference is used at runtime.
  */
 class SilmaF5Engine(private val context: Context) : AutoCloseable {
@@ -25,15 +30,27 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
     private var preprocess: OrtSession? = null
     private var transformer: OrtSession? = null
     private var decoder: OrtSession? = null
+    private var sessionOptions: OrtSession.SessionOptions? = null
     private var vocab: Map<String, Int> = emptyMap()
 
     val sampleRate: Int = 24_000
+    val workerThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+
+    @Volatile
+    var backendName: String = "not loaded"
+        private set
+
+    private enum class Backend {
+        XNNPACK,
+        NNAPI,
+        CPU,
+    }
 
     @Synchronized
     fun load(progress: ((String) -> Unit)? = null) {
         if (preprocess != null && transformer != null && decoder != null) return
 
-        progress?.invoke("Preparing SILMA voice-cloning engine…")
+        progress?.invoke("Preparing SILMA neural studio…")
         val preFile = extractAsset("silma-f5/F5_Preprocess.onnx", progress)
         val transformerFile = extractAsset("silma-f5/model.onnx", progress)
         val decodeFile = extractAsset("silma-f5/F5_Decode.onnx", progress)
@@ -48,23 +65,79 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                 }
                 map
             }
-
         require(vocab.isNotEmpty()) { "SILMA vocabulary is missing" }
 
-        val options = OrtSession.SessionOptions()
-        try {
-            progress?.invoke("Loading SILMA preprocess graph…")
-            preprocess = env.createSession(preFile.absolutePath, options)
-            progress?.invoke("Loading SILMA transformer…")
-            transformer = env.createSession(transformerFile.absolutePath, options)
-            progress?.invoke("Loading SILMA decoder…")
-            decoder = env.createSession(decodeFile.absolutePath, options)
-        } catch (t: Throwable) {
-            close()
-            throw t
-        } finally {
-            options.close()
+        val candidates = buildList {
+            // ORT's own Android guidance recommends XNNPACK first for non-quantized models.
+            add(Backend.XNNPACK)
+            if (Build.VERSION.SDK_INT >= 27) add(Backend.NNAPI)
+            add(Backend.CPU)
         }
+
+        var lastError: Throwable? = null
+        for (backend in candidates) {
+            closeSessionsOnly()
+            progress?.invoke("Trying ${backendLabel(backend)} acceleration…")
+            try {
+                val options = createOptions(backend)
+                sessionOptions = options
+                preprocess = env.createSession(preFile.absolutePath, options)
+                transformer = env.createSession(transformerFile.absolutePath, options)
+                decoder = env.createSession(decodeFile.absolutePath, options)
+                backendName = backendLabel(backend)
+                progress?.invoke("SILMA ready · $backendName · $workerThreads compute threads")
+                return
+            } catch (t: Throwable) {
+                lastError = t
+                closeSessionsOnly()
+            }
+        }
+
+        throw IllegalStateException(
+            "Unable to initialize SILMA on XNNPACK, NNAPI or CPU",
+            lastError,
+        )
+    }
+
+    private fun createOptions(backend: Backend): OrtSession.SessionOptions {
+        val options = OrtSession.SessionOptions()
+        options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
+        options.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
+        options.setInterOpNumThreads(1)
+        options.setMemoryPatternOptimization(true)
+        options.setCPUArenaAllocator(true)
+
+        when (backend) {
+            Backend.XNNPACK -> {
+                // XNNPACK owns its own optimized thread pool. ORT recommends one ORT
+                // intra-op thread and disabling ORT spinning to avoid contention.
+                options.setIntraOpNumThreads(1)
+                options.addConfigEntry("session.intra_op.allow_spinning", "0")
+                options.addXnnpack(
+                    mapOf("intra_op_num_threads" to workerThreads.toString())
+                )
+            }
+            Backend.NNAPI -> {
+                // Keep CPU fallback enabled because transformer graphs may contain a
+                // small number of operators unsupported by a specific phone's NNAPI driver.
+                options.setIntraOpNumThreads(workerThreads.coerceAtMost(6))
+                options.addConfigEntry("session.intra_op.allow_spinning", "1")
+                options.addNnapi()
+            }
+            Backend.CPU -> {
+                options.setIntraOpNumThreads(workerThreads.coerceAtMost(6))
+                options.addConfigEntry("session.intra_op.allow_spinning", "1")
+                options.addConfigEntry("session.intra_op.spin_duration_us", "1000")
+                options.addConfigEntry("session.intra_op.spin_backoff_max", "8")
+            }
+        }
+        return options
+    }
+
+    private fun backendLabel(backend: Backend): String = when (backend) {
+        Backend.XNNPACK -> "XNNPACK ARM"
+        Backend.NNAPI -> "Android NNAPI"
+        Backend.CPU -> "ORT tuned CPU"
     }
 
     fun builtInReference(): VoiceReference {
@@ -82,7 +155,11 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
     }
 
     /**
-     * Synthesize one semantic chunk. The caller is responsible for long-book chunking and joins.
+     * Synthesize one semantic chunk.
+     *
+     * SILMA's exported transformer is a 32-NFE graph. We therefore keep the full
+     * 32-step trajectory for production quality instead of stopping early and
+     * decoding a partially denoised signal.
      */
     @Synchronized
     fun synthesize(
@@ -143,7 +220,9 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                         var previousTransformerResult: OrtSession.Result? = null
 
                         try {
-                            val steps = nfeSteps.coerceIn(8, 32)
+                            // The downloaded SILMA export is configured for NFE=32.
+                            // Clamp to 32 to protect quality and graph semantics.
+                            val steps = nfeSteps.coerceIn(32, 32)
                             for (i in 0 until steps - 1) {
                                 if (cancelled?.get() == true) throw GenerationCancelled()
 
@@ -281,13 +360,20 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         return out
     }
 
-    override fun close() {
+    private fun closeSessionsOnly() {
         runCatching { preprocess?.close() }
         runCatching { transformer?.close() }
         runCatching { decoder?.close() }
         preprocess = null
         transformer = null
         decoder = null
+        runCatching { sessionOptions?.close() }
+        sessionOptions = null
+    }
+
+    override fun close() {
+        closeSessionsOnly()
+        backendName = "closed"
     }
 
     data class VoiceReference(val samples: ShortArray, val transcript: String)
