@@ -6,12 +6,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
-import com.k2fsa.sherpa.onnx.OfflineTts
-import com.k2fsa.sherpa.onnx.getOfflineTtsConfig
-import java.io.File
-import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
+/**
+ * Foreground audiobook renderer for LATIF Voice Studio v3.
+ * Primary engine: SILMA TTS v1 / F5-TTS ONNX, entirely on-device.
+ */
 class AudiobookService : Service() {
     private val cancelled = AtomicBoolean(false)
     @Volatile private var running = false
@@ -39,12 +40,13 @@ class AudiobookService : Service() {
         val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME)
         val profile = NarrationProfile.fromOrdinal(intent.getIntExtra(EXTRA_PROFILE, NarrationProfile.LITERARY.ordinal))
         val speed = intent.getFloatExtra(EXTRA_SPEED, profile.defaultSpeed).coerceIn(0.82f, 1.08f)
+        val refUri = intent.getStringExtra(EXTRA_REFERENCE_URI)?.takeIf { it.isNotBlank() }?.let(Uri::parse)
+        val refText = intent.getStringExtra(EXTRA_REFERENCE_TEXT).orEmpty()
 
         running = true
         cancelled.set(false)
-        startForeground(NOTIFICATION_ID, notification("Preparing high-quality Arabic narration…", 0, true))
-
-        Thread { runJob(uri, rawText, title, displayName, profile, speed) }.start()
+        startForeground(NOTIFICATION_ID, notification("Preparing SILMA local studio…", 0, true))
+        Thread { runJob(uri, rawText, title, displayName, profile, speed, refUri, refText) }.start()
         return START_NOT_STICKY
     }
 
@@ -55,68 +57,63 @@ class AudiobookService : Service() {
         displayName: String?,
         profile: NarrationProfile,
         speed: Float,
+        referenceUri: Uri?,
+        referenceText: String,
     ) {
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LatifAudiobook:render").apply {
+        wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LatifVoiceStudio:render").apply {
             setReferenceCounted(false)
             acquire(12 * 60 * 60 * 1000L)
         }
 
-        var tts: OfflineTts? = null
+        var engine: SilmaF5Engine? = null
         var writer: M4aWriter? = null
-        var diacritizer: RawiDiacritizer? = null
         try {
-            sendProgress(1, "Reading book…")
+            sendProgress(1, "Reading manuscript…")
             val text = rawText?.takeIf { it.isNotBlank() }
                 ?: BookParser.readText(this, requireNotNull(uri), displayName)
             require(text.length >= 20) { "The selected book contains no readable text." }
 
-            sendProgress(3, "Preparing literary Arabic…")
-            // Nabra has a 510-phoneme style-row cap. Keep chunks sentence-aware and
-            // moderately long for prosody, then split automatically if a hard case
-            // still exceeds the model limit.
-            val chunks = BookParser.splitForNarration(text, 320)
+            sendProgress(2, "Building semantic narration sections…")
+            val chunks = BookParser.splitForNarration(text, 180)
             require(chunks.isNotEmpty()) { "No narration sections were created." }
 
-            val dataDir = ensureAssetTreeOnDisk("nabra-82m/espeak-ng-data")
-            val config = getOfflineTtsConfig(
-                modelDir = "nabra-82m",
-                modelName = "model.fp16.onnx",
-                acousticModelName = "",
-                vocoder = "",
-                voices = "voices.bin",
-                lexicon = "",
-                dataDir = dataDir.absolutePath,
-                dictDir = "",
-                ruleFsts = "",
-                ruleFars = "",
-                numThreads = 4,
-            )
+            engine = SilmaF5Engine(this)
+            engine.load { message -> sendProgress(3, message) }
 
-            // Load Nabra first. The previous build initialized the separate Java
-            // ONNX Runtime bridge before sherpa-onnx and could fail at
-            // ai.onnxruntime.OrtEnvironment before TTS ever started.
-            sendProgress(5, "Loading Nabra voice…")
-            tts = OfflineTts(assetManager = assets, config = config)
-            val sampleRate = tts.sampleRate()
-            writer = M4aWriter(this, title, sampleRate, bitrate = 96_000)
+            val reference = if (referenceUri != null) {
+                sendProgress(4, "Preparing your cloned narrator voice…")
+                engine.referenceFromUri(referenceUri, referenceText)
+            } else {
+                sendProgress(4, "Loading built-in Arabic studio narrator…")
+                engine.builtInReference()
+            }
 
-            // Rawi is a quality enhancement, not a hard dependency. Probe it once.
-            // If the device/runtime rejects the Java ORT bridge, narration continues
-            // with Nabra instead of aborting the entire audiobook.
-            diacritizer = createRawiOrNull()
+            writer = M4aWriter(this, title, engine.sampleRate, bitrate = 128_000)
+            sendProgress(5, "SILMA F5 studio ready · ${chunks.size} sections")
 
             chunks.forEachIndexed { index, chunk ->
                 if (cancelled.get()) throw JobCancelledException()
-                val p = 5 + (((index.toDouble() / chunks.size) * 92.0).toInt())
-                sendProgress(p, "Narrating ${index + 1} / ${chunks.size} · ${profile.labelAr}")
+                val clean = ArabicText.prepareForNarration(chunk)
+                if (clean.isBlank()) return@forEachIndexed
 
-                renderChunk(tts, diacritizer, writer, chunk, speed)
+                val audio = engine.synthesize(
+                    reference = reference,
+                    text = clean,
+                    speed = speed,
+                    nfeSteps = 32,
+                    cancelled = cancelled,
+                ) { step, stepCount ->
+                    val unit = (index.toDouble() + step.toDouble() / stepCount.coerceAtLeast(1)) / chunks.size.toDouble()
+                    val percent = 5 + (unit * 92.0).roundToInt().coerceIn(0, 92)
+                    sendProgress(percent, "SILMA narration ${index + 1}/${chunks.size} · quality pass $step/$stepCount")
+                }
 
+                writer.writePcm16(edgeFade(audio, engine.sampleRate, 7))
                 val pauseMs = when {
-                    chunk.endsWith("؟") || chunk.endsWith("!") -> profile.questionPauseMs
-                    chunk.endsWith(".") || chunk.endsWith("…") || chunk.endsWith("؛") -> profile.sentencePauseMs
-                    else -> profile.softPauseMs
+                    clean.endsWith("؟") || clean.endsWith("!") -> profile.questionPauseMs.coerceIn(80, 220)
+                    clean.endsWith(".") || clean.endsWith("…") || clean.endsWith("؛") -> profile.sentencePauseMs.coerceIn(65, 180)
+                    else -> profile.softPauseMs.coerceIn(30, 100)
                 }
                 writer.writeSilence(pauseMs)
             }
@@ -130,6 +127,10 @@ class AudiobookService : Service() {
                 .apply()
             sendComplete(out, title)
             updateNotification("Audiobook ready", 100, false)
+        } catch (_: SilmaF5Engine.GenerationCancelled) {
+            writer?.abort()
+            sendFailed("Cancelled")
+            updateNotification("Generation cancelled", 0, false)
         } catch (_: JobCancelledException) {
             writer?.abort()
             sendFailed("Cancelled")
@@ -139,8 +140,7 @@ class AudiobookService : Service() {
             sendFailed(errorSummary(t))
             updateNotification("Generation failed", 0, false)
         } finally {
-            runCatching { diacritizer?.close() }
-            runCatching { tts?.release() }
+            runCatching { engine?.close() }
             runCatching { wakeLock?.release() }
             running = false
             stopForeground(false)
@@ -148,103 +148,25 @@ class AudiobookService : Service() {
         }
     }
 
-    private fun createRawiOrNull(): RawiDiacritizer? {
-        val candidate = runCatching { RawiDiacritizer(this) }.getOrNull() ?: return null
-        return runCatching {
-            // Force both the Java bridge and native session to initialize now.
-            candidate.prepare("الصوت العربي الطبيعي يحتاج إلى نطق واضح.")
-            candidate
-        }.getOrElse {
-            runCatching { candidate.close() }
-            null
+    private fun edgeFade(samples: ShortArray, sampleRate: Int, milliseconds: Int): ShortArray {
+        if (samples.isEmpty()) return samples
+        val n = (sampleRate * milliseconds / 1000).coerceAtMost(samples.size / 3)
+        if (n <= 1) return samples
+        val out = samples.copyOf()
+        for (i in 0 until n) {
+            val gain = (i + 1).toDouble() / n.toDouble()
+            out[i] = (out[i] * gain).toInt().toShort()
+            val j = out.lastIndex - i
+            out[j] = (out[j] * gain).toInt().toShort()
         }
-    }
-
-    private fun renderChunk(
-        tts: OfflineTts,
-        diacritizer: RawiDiacritizer?,
-        writer: M4aWriter,
-        text: String,
-        speed: Float,
-        depth: Int = 0,
-    ) {
-        if (cancelled.get()) throw JobCancelledException()
-        val cleaned = ArabicText.prepareForNarration(text)
-        if (cleaned.isBlank()) return
-
-        try {
-            // Nabra-82M has one actual speaker: af_msa / sid 0. Quality is
-            // improved by context-aware tashkeel when Rawi is available, while
-            // Nabra remains fully usable if Rawi cannot initialize on a device.
-            val prepared = diacritizer?.let {
-                runCatching { it.prepare(cleaned) }.getOrElse { cleaned }
-            } ?: cleaned
-            val audio = tts.generate(prepared, 0, speed)
-            require(audio.samples.isNotEmpty()) { "Arabic voice engine returned empty audio." }
-            writer.writeFloat(audio.samples)
-        } catch (t: Throwable) {
-            if (depth >= 3 || cleaned.length < 90) throw t
-            val split = splitNearMiddle(cleaned)
-            if (split.first.isBlank() || split.second.isBlank()) throw t
-            renderChunk(tts, diacritizer, writer, split.first, speed, depth + 1)
-            writer.writeSilence(35)
-            renderChunk(tts, diacritizer, writer, split.second, speed, depth + 1)
-        }
-    }
-
-    private fun splitNearMiddle(text: String): Pair<String, String> {
-        val middle = text.length / 2
-        val punctuation = listOf('،', '؛', '.', '؟', '!', '…')
-        var best = -1
-        var distance = Int.MAX_VALUE
-        for (i in text.indices) {
-            if (text[i].isWhitespace() || text[i] in punctuation) {
-                val d = kotlin.math.abs(i - middle)
-                if (d < distance) {
-                    best = i
-                    distance = d
-                }
-            }
-        }
-        if (best <= 20 || best >= text.length - 20) best = middle
-        return text.substring(0, best).trim() to text.substring(best).trim()
-    }
-
-    private fun ensureAssetTreeOnDisk(assetPath: String): File {
-        val outRoot = File(filesDir, "tts-runtime/$assetPath")
-        val marker = File(outRoot, ".ready-v2")
-        if (marker.exists()) return outRoot
-        if (outRoot.exists()) outRoot.deleteRecursively()
-        outRoot.mkdirs()
-        copyAssetRecursive(assetPath, outRoot)
-        marker.writeText("LATIF Audiobook AI v2")
-        return outRoot
-    }
-
-    private fun copyAssetRecursive(assetPath: String, destination: File) {
-        val children = assets.list(assetPath).orEmpty()
-        if (children.isEmpty()) {
-            destination.parentFile?.mkdirs()
-            assets.open(assetPath).use { input ->
-                FileOutputStream(destination).use { output -> input.copyTo(output, 1024 * 128) }
-            }
-            return
-        }
-        destination.mkdirs()
-        for (name in children) {
-            copyAssetRecursive("$assetPath/$name", File(destination, name))
-        }
+        return out
     }
 
     private fun errorSummary(t: Throwable): String {
         var root = t
         while (root.cause != null && root.cause !== root) root = root.cause!!
-        val rootMessage = root.message?.takeIf { it.isNotBlank() }
-        return if (rootMessage != null) {
-            "${root.javaClass.simpleName}: $rootMessage"
-        } else {
-            root.javaClass.name
-        }
+        val message = root.message?.takeIf { it.isNotBlank() }
+        return if (message != null) "${root.javaClass.simpleName}: $message" else root.javaClass.name
     }
 
     private fun sendProgress(percent: Int, message: String) {
@@ -280,7 +202,7 @@ class AudiobookService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("LATIF Audiobook AI · Nabra + Rawi")
+            .setContentTitle("LATIF Voice Studio · SILMA F5")
             .setContentText(message)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pending)
@@ -308,6 +230,8 @@ class AudiobookService : Service() {
         const val EXTRA_DISPLAY_NAME = "displayName"
         const val EXTRA_SPEED = "speed"
         const val EXTRA_PROFILE = "profile"
+        const val EXTRA_REFERENCE_URI = "referenceUri"
+        const val EXTRA_REFERENCE_TEXT = "referenceText"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_OUTPUT_URI = "outputUri"
@@ -316,6 +240,6 @@ class AudiobookService : Service() {
         const val KEY_LAST_TITLE = "lastTitle"
         const val KEY_LAST_PROFILE = "lastProfile"
         private const val CHANNEL_ID = "latif_audiobook_render"
-        private const val NOTIFICATION_ID = 7002
+        private const val NOTIFICATION_ID = 7003
     }
 }
