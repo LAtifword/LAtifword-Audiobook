@@ -6,11 +6,13 @@ import android.content.Intent
 import android.net.Uri
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.Process
+import android.os.SystemClock
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
 
 /**
- * Foreground audiobook renderer for LATIF Voice Studio v3.
+ * Foreground audiobook renderer for LATIF Voice Studio v3.1.
  * Primary engine: SILMA TTS v1 / F5-TTS ONNX, entirely on-device.
  */
 class AudiobookService : Service() {
@@ -42,11 +44,15 @@ class AudiobookService : Service() {
         val speed = intent.getFloatExtra(EXTRA_SPEED, profile.defaultSpeed).coerceIn(0.82f, 1.08f)
         val refUri = intent.getStringExtra(EXTRA_REFERENCE_URI)?.takeIf { it.isNotBlank() }?.let(Uri::parse)
         val refText = intent.getStringExtra(EXTRA_REFERENCE_TEXT).orEmpty()
+        val previewOnly = intent.getBooleanExtra(EXTRA_PREVIEW_ONLY, false)
 
         running = true
         cancelled.set(false)
-        startForeground(NOTIFICATION_ID, notification("Preparing SILMA local studio…", 0, true))
-        Thread { runJob(uri, rawText, title, displayName, profile, speed, refUri, refText) }.start()
+        startForeground(NOTIFICATION_ID, notification("Preparing SILMA accelerated studio…", 0, true))
+        Thread {
+            runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_FOREGROUND) }
+            runJob(uri, rawText, title, displayName, profile, speed, refUri, refText, previewOnly)
+        }.start()
         return START_NOT_STICKY
     }
 
@@ -59,11 +65,12 @@ class AudiobookService : Service() {
         speed: Float,
         referenceUri: Uri?,
         referenceText: String,
+        previewOnly: Boolean,
     ) {
         val power = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LatifVoiceStudio:render").apply {
             setReferenceCounted(false)
-            acquire(12 * 60 * 60 * 1000L)
+            acquire(24 * 60 * 60 * 1000L)
         }
 
         var engine: SilmaF5Engine? = null
@@ -75,8 +82,9 @@ class AudiobookService : Service() {
             require(text.length >= 20) { "The selected book contains no readable text." }
 
             sendProgress(2, "Building semantic narration sections…")
-            val chunks = BookParser.splitForNarration(text, 180)
-            require(chunks.isNotEmpty()) { "No narration sections were created." }
+            val allChunks = BookParser.splitForNarration(text, 220)
+            require(allChunks.isNotEmpty()) { "No narration sections were created." }
+            val chunks = if (previewOnly) listOf(allChunks.first()) else allChunks
 
             engine = SilmaF5Engine(this)
             engine.load { message -> sendProgress(3, message) }
@@ -89,14 +97,23 @@ class AudiobookService : Service() {
                 engine.builtInReference()
             }
 
-            writer = M4aWriter(this, title, engine.sampleRate, bitrate = 128_000)
-            sendProgress(5, "SILMA F5 studio ready · ${chunks.size} sections")
+            val outputTitle = if (previewOnly) "$title — preview" else title
+            writer = M4aWriter(this, outputTitle, engine.sampleRate, bitrate = 128_000)
+            sendProgress(
+                5,
+                "SILMA ready · ${engine.backendName} · ${engine.workerThreads} threads · ${chunks.size} section${if (chunks.size == 1) "" else "s"}"
+            )
+
+            val renderStart = SystemClock.elapsedRealtime()
+            var completedMs = 0L
+            var completedCount = 0
 
             chunks.forEachIndexed { index, chunk ->
                 if (cancelled.get()) throw JobCancelledException()
                 val clean = ArabicText.prepareForNarration(chunk)
                 if (clean.isBlank()) return@forEachIndexed
 
+                val chunkStart = SystemClock.elapsedRealtime()
                 val audio = engine.synthesize(
                     reference = reference,
                     text = clean,
@@ -106,7 +123,10 @@ class AudiobookService : Service() {
                 ) { step, stepCount ->
                     val unit = (index.toDouble() + step.toDouble() / stepCount.coerceAtLeast(1)) / chunks.size.toDouble()
                     val percent = 5 + (unit * 92.0).roundToInt().coerceIn(0, 92)
-                    sendProgress(percent, "SILMA narration ${index + 1}/${chunks.size} · quality pass $step/$stepCount")
+                    sendProgress(
+                        percent,
+                        "SILMA ${index + 1}/${chunks.size} · F5 refinement $step/$stepCount · ${engine.backendName}"
+                    )
                 }
 
                 writer.writePcm16(edgeFade(audio, engine.sampleRate, 7))
@@ -116,17 +136,30 @@ class AudiobookService : Service() {
                     else -> profile.softPauseMs.coerceIn(30, 100)
                 }
                 writer.writeSilence(pauseMs)
+
+                completedMs += (SystemClock.elapsedRealtime() - chunkStart)
+                completedCount++
+                if (!previewOnly && completedCount >= 1 && index + 1 < chunks.size) {
+                    val averageMs = completedMs / completedCount
+                    val remainingMs = averageMs * (chunks.size - index - 1).toLong()
+                    val overall = SystemClock.elapsedRealtime() - renderStart
+                    sendProgress(
+                        5 + (((index + 1).toDouble() / chunks.size) * 92.0).roundToInt().coerceIn(0, 92),
+                        "${index + 1}/${chunks.size} complete · ETA ${formatDuration(remainingMs)} · elapsed ${formatDuration(overall)} · ${engine.backendName}"
+                    )
+                }
             }
 
-            sendProgress(98, "Mastering final audiobook…")
+            sendProgress(98, if (previewOnly) "Mastering preview…" else "Mastering final audiobook…")
             val out = writer.finish()
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                 .putString(KEY_LAST_OUTPUT, out.toString())
-                .putString(KEY_LAST_TITLE, title)
+                .putString(KEY_LAST_TITLE, outputTitle)
                 .putInt(KEY_LAST_PROFILE, profile.ordinal)
+                .putString(KEY_LAST_BACKEND, engine.backendName)
                 .apply()
-            sendComplete(out, title)
-            updateNotification("Audiobook ready", 100, false)
+            sendComplete(out, outputTitle)
+            updateNotification(if (previewOnly) "Preview ready" else "Audiobook ready", 100, false)
         } catch (_: SilmaF5Engine.GenerationCancelled) {
             writer?.abort()
             sendFailed("Cancelled")
@@ -160,6 +193,13 @@ class AudiobookService : Service() {
             out[j] = (out[j] * gain).toInt().toShort()
         }
         return out
+    }
+
+    private fun formatDuration(milliseconds: Long): String {
+        val totalMinutes = (milliseconds / 60_000L).coerceAtLeast(0L)
+        val hours = totalMinutes / 60L
+        val minutes = totalMinutes % 60L
+        return if (hours > 0) "${hours}h ${minutes}m" else "${minutes}m"
     }
 
     private fun errorSummary(t: Throwable): String {
@@ -198,11 +238,11 @@ class AudiobookService : Service() {
 
     private fun notification(message: String, progress: Int, ongoing: Boolean): Notification {
         val pending = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
+            this, 0, Intent(this, MainActivityV3::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("LATIF Voice Studio · SILMA F5")
+            .setContentTitle("LATIF Voice Studio 3.1 · SILMA F5")
             .setContentText(message)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pending)
@@ -232,6 +272,7 @@ class AudiobookService : Service() {
         const val EXTRA_PROFILE = "profile"
         const val EXTRA_REFERENCE_URI = "referenceUri"
         const val EXTRA_REFERENCE_TEXT = "referenceText"
+        const val EXTRA_PREVIEW_ONLY = "previewOnly"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_OUTPUT_URI = "outputUri"
@@ -239,7 +280,8 @@ class AudiobookService : Service() {
         const val KEY_LAST_OUTPUT = "lastOutput"
         const val KEY_LAST_TITLE = "lastTitle"
         const val KEY_LAST_PROFILE = "lastProfile"
+        const val KEY_LAST_BACKEND = "lastBackend"
         private const val CHANNEL_ID = "latif_audiobook_render"
-        private const val NOTIFICATION_ID = 7003
+        private const val NOTIFICATION_ID = 7004
     }
 }
