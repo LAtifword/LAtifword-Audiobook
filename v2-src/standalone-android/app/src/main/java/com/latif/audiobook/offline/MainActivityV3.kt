@@ -21,7 +21,7 @@ import android.view.ViewGroup
 import android.widget.*
 import java.util.Locale
 
-/** Native UI for the large, fully-offline SILMA/F5 audiobook build. */
+/** Native UI for the large, fully-offline accelerated SILMA/F5 audiobook build. */
 class MainActivityV3 : Activity() {
     private var bookUri: Uri? = null
     private var bookName: String? = null
@@ -38,6 +38,7 @@ class MainActivityV3 : Activity() {
     private lateinit var speedSeek: SeekBar
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
+    private lateinit var preview: Button
     private lateinit var generate: Button
     private lateinit var cancel: Button
     private lateinit var play: Button
@@ -57,13 +58,15 @@ class MainActivityV3 : Activity() {
                     progress.visibility = View.VISIBLE
                     progress.progress = p
                     status.text = intent.getStringExtra(AudiobookService.EXTRA_MESSAGE).orEmpty()
+                    preview.isEnabled = false
                     generate.isEnabled = false
                     cancel.visibility = View.VISIBLE
                 }
                 AudiobookService.ACTION_COMPLETE -> {
                     progress.visibility = View.VISIBLE
                     progress.progress = 100
-                    status.text = "اكتمل الكتاب الصوتي — Music/LATIF Audiobooks"
+                    status.text = "اكتمل الملف الصوتي — Music/LATIF Audiobooks"
+                    preview.isEnabled = true
                     generate.isEnabled = true
                     cancel.visibility = View.GONE
                     play.visibility = View.VISIBLE
@@ -72,6 +75,7 @@ class MainActivityV3 : Activity() {
                 AudiobookService.ACTION_FAILED -> {
                     val message = intent.getStringExtra(AudiobookService.EXTRA_MESSAGE).orEmpty()
                     status.text = if (message == "Cancelled") "تم إلغاء التوليد" else "توقف التوليد: $message"
+                    preview.isEnabled = true
                     generate.isEnabled = true
                     cancel.visibility = View.GONE
                 }
@@ -83,6 +87,9 @@ class MainActivityV3 : Activity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = bg
         window.navigationBarColor = bg
+        if (Build.VERSION.SDK_INT >= 24) {
+            runCatching { window.setSustainedPerformanceMode(true) }
+        }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 88)
         }
@@ -128,15 +135,15 @@ class MainActivityV3 : Activity() {
             gravity = Gravity.START
         })
         root.addView(TextView(this).apply {
-            text = "3.0 · SILMA F5 · مكتبة صوتية محلية بالكامل"
+            text = "3.1 · SILMA F5 · XNNPACK / NNAPI / CPU AUTO"
             setTextColor(saffron)
             textSize = 13f
             setPadding(0, dp(4), 0, dp(18))
         })
 
         root.addView(panel().apply {
-            addView(title("محرك بحجم كبير لأن الجودة هي الأولوية"))
-            addView(body("SILMA TTS v1 / F5-TTS · استنساخ صوت من مرجع قصير · 24 kHz · 32 خطوة جودة · لا API · لا حساب · لا خادم · لا تنزيل نماذج بعد التثبيت."))
+            addView(title("تسريع فعلي للمحرك، لا تغيير شكلي"))
+            addView(body("SILMA TTS v1 / F5-TTS · يجرّب XNNPACK أولاً، ثم Android NNAPI، ثم CPU مضبوط تلقائياً. 24 kHz · 32 خطوة F5 الأصلية · لا API · لا حساب · لا خادم."))
         })
 
         root.addView(kicker("01 / الكتاب"))
@@ -156,7 +163,7 @@ class MainActivityV3 : Activity() {
         root.addView(kicker("02 / الصوت"))
         root.addView(panel().apply {
             addView(title("الراوي المدمج"))
-            addView(body("جاهز فوراً بعد التثبيت. مبني على المرجع العربي الرسمي لـ SILMA ويعمل بلا إنترنت."))
+            addView(body("جاهز بعد التثبيت ويعمل بلا إنترنت. يمكنك أيضاً اختيار WAV لمرجع صوت تملك الإذن باستخدامه."))
         })
         root.addView(button("اختيار WAV لاستنساخ صوت آخر — اختياري", false).apply { setOnClickListener { chooseReference() } }, params(top = 10))
         voiceInfo = body("حالياً: الراوي العربي المدمج")
@@ -192,12 +199,14 @@ class MainActivityV3 : Activity() {
             })
         }
         pace.addView(speedSeek, params(top = 8))
-        pace.addView(body("الجودة ثابتة على 32 خطوة F5. خفّض السرعة فقط إذا أردت سرداً أكثر هدوءاً."))
+        pace.addView(body("32 خطوة F5 هي مسار التوليد الأصلي للنموذج، وليست اختبار جودة. الإصدار 3.1 يسرّع التنفيذ نفسه مع الحفاظ على المسار الكامل."))
         root.addView(pace)
 
-        root.addView(kicker("04 / التوليد"))
-        generate = button("إنشاء الكتاب الصوتي بالكامل", true).apply { setOnClickListener { startGeneration() } }
-        root.addView(generate)
+        root.addView(kicker("04 / الاختبار ثم التوليد"))
+        preview = button("اختبار مقطع واحد أولاً", false).apply { setOnClickListener { startGeneration(previewOnly = true) } }
+        root.addView(preview)
+        generate = button("إنشاء الكتاب الصوتي بالكامل", true).apply { setOnClickListener { startGeneration(previewOnly = false) } }
+        root.addView(generate, params(top = 8))
         cancel = button("إلغاء", false).apply {
             visibility = View.GONE
             setOnClickListener { startService(Intent(this@MainActivityV3, AudiobookService::class.java).setAction(AudiobookService.ACTION_CANCEL)) }
@@ -209,7 +218,7 @@ class MainActivityV3 : Activity() {
             progressTintList = android.content.res.ColorStateList.valueOf(saffron)
         }
         root.addView(progress, params(top = 12))
-        status = body("جاهز. أول تشغيل يستخرج النموذج الكبير إلى مساحة التطبيق ثم يبدأ التوليد.")
+        status = body("جاهز. اختبر مقطعاً واحداً أولاً؛ سيعرض التطبيق أيضاً المحرك المستخدم ووقت الإنجاز المتوقع للكتاب الكامل.")
         root.addView(status)
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -220,7 +229,7 @@ class MainActivityV3 : Activity() {
         root.addView(row, params(top = 10))
 
         root.addView(TextView(this).apply {
-            text = "OFFLINE BY DESIGN · SILMA F5 ONNX · ARM64 · LATIF VOICE STUDIO 3.0"
+            text = "OFFLINE BY DESIGN · SILMA F5 ONNX · XNNPACK / NNAPI · ARM64 · LATIF VOICE STUDIO 3.1"
             setTextColor(Color.rgb(90, 94, 110))
             textSize = 9.5f
             typeface = Typeface.MONOSPACE
@@ -265,7 +274,7 @@ class MainActivityV3 : Activity() {
                 val base = bookName?.substringBeforeLast('.').orEmpty()
                 if (titleInput.text.isBlank()) titleInput.setText(base)
                 bookInfo.text = "الكتاب: ${bookName ?: "ملف مختار"}"
-                status.text = "تم اختيار الكتاب. سيقرأ التطبيق النص الكامل عند بدء التوليد."
+                status.text = "تم اختيار الكتاب. اختبر مقطعاً واحداً قبل التوليد الكامل."
             }
             PICK_REFERENCE -> {
                 referenceUri = uri
@@ -276,7 +285,7 @@ class MainActivityV3 : Activity() {
         }
     }
 
-    private fun startGeneration() {
+    private fun startGeneration(previewOnly: Boolean) {
         val pasted = if (bookUri == null) textInput.text.toString().trim() else ""
         if (bookUri == null && pasted.length < 20) {
             Toast.makeText(this, "اختر كتاباً أو الصق نصاً أولاً.", Toast.LENGTH_SHORT).show()
@@ -297,12 +306,14 @@ class MainActivityV3 : Activity() {
             putExtra(AudiobookService.EXTRA_DISPLAY_NAME, bookName)
             putExtra(AudiobookService.EXTRA_SPEED, speedValue())
             putExtra(AudiobookService.EXTRA_PROFILE, NarrationProfile.LITERARY.ordinal)
+            putExtra(AudiobookService.EXTRA_PREVIEW_ONLY, previewOnly)
             referenceUri?.let { putExtra(AudiobookService.EXTRA_REFERENCE_URI, it.toString()) }
             putExtra(AudiobookService.EXTRA_REFERENCE_TEXT, referenceText.text.toString().trim())
         }
         progress.visibility = View.VISIBLE
         progress.progress = 0
-        status.text = "بدء استوديو SILMA المحلي…"
+        status.text = if (previewOnly) "بدء اختبار مقطع واحد…" else "بدء استوديو SILMA المسرّع…"
+        preview.isEnabled = false
         generate.isEnabled = false
         cancel.visibility = View.VISIBLE
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(work) else startService(work)
