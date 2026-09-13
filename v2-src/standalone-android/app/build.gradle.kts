@@ -11,8 +11,12 @@ android {
         applicationId = "com.latif.audiobook.offline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "2.2.0"
+        versionCode = 7
+        versionName = "3.0.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -43,12 +47,12 @@ android {
     }
 
     androidResources {
-        noCompress += listOf("onnx", "bin", "json")
+        // The neural weights are already binary-compressed and need random access/copy-once extraction.
+        noCompress += listOf("onnx", "bin", "json", "txt", "wav")
     }
 }
 
 dependencies {
-    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
