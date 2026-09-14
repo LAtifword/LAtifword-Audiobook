@@ -11,8 +11,8 @@ android {
         applicationId = "com.latif.audiobook.offline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "3.1.0"
+        versionCode = 9
+        versionName = "3.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -47,7 +47,6 @@ android {
     }
 
     androidResources {
-        // Neural weights stay uncompressed so Android/ORT can read them efficiently.
         noCompress += listOf("onnx", "bin", "json", "txt", "wav")
     }
 }
@@ -55,8 +54,5 @@ android {
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
-
-    // Full Android ORT includes CPU, XNNPACK and NNAPI execution providers.
-    // v3.1 selects the best available local backend at runtime and falls back safely.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 }
