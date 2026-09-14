@@ -1,0 +1,75 @@
+name: Verify LATIF Voice Studio v3.2 Adaptive
+
+on:
+  push:
+    branches:
+      - latif-voice-studio-v3.2-hybrid
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: |
+          set -euxo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Stage source and model assets
+        run: |
+          set -euxo pipefail
+          rm -rf standalone-android
+          cp -a v2-src/standalone-android standalone-android
+          ASSETS=standalone-android/app/src/main/assets/silma-f5
+          mkdir -p "$ASSETS"
+          BASE='https://huggingface.co/OpenVoiceOS/phoonnx-f5tts/resolve/main/silma-tts-v1'
+          curl -L --fail --retry 5 -o "$ASSETS/model.onnx" "$BASE/model.onnx?download=true"
+          curl -L --fail --retry 5 -o "$ASSETS/F5_Preprocess.onnx" "$BASE/F5_Preprocess.onnx?download=true"
+          curl -L --fail --retry 5 -o "$ASSETS/F5_Decode.onnx" "$BASE/F5_Decode.onnx?download=true"
+          curl -L --fail --retry 5 -o "$ASSETS/vocab.txt" "$BASE/vocab.txt?download=true"
+          curl -L --fail --retry 5 -o "$ASSETS/config.json" "$BASE/config.json?download=true"
+          curl -L --fail --retry 5 -o "$ASSETS/default_ref.wav" 'https://huggingface.co/spaces/silma-ai/silma-tts-v1-demo/resolve/main/ar.ref.24k.wav?download=true'
+
+      - name: Compile v3.2 Kotlin
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          gradle --no-daemon --stacktrace :app:compileReleaseKotlin
+
+      - name: Assemble unsigned v3.2 APK
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          gradle --no-daemon --stacktrace :app:assembleRelease
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK"
+          unzip -t "$APK" >/dev/null
+          unzip -l "$APK" | grep -q 'assets/silma-f5/model.onnx'
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libonnxruntime.so'
+          sha256sum "$APK"
+          stat -c '%n %s bytes' "$APK"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-VOICE-STUDIO-v3.2.0-ADAPTIVE-UNSIGNED-VERIFY
+          path: standalone-android/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 7
+          compression-level: 0
