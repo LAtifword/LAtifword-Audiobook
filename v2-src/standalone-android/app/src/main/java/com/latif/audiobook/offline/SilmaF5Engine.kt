@@ -4,24 +4,27 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OnnxValue
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.providers.NNAPIFlags
 import android.content.Context
 import android.os.Build
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.FloatBuffer
 import java.nio.IntBuffer
 import java.nio.LongBuffer
 import java.nio.ShortBuffer
+import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 /**
  * Fully local SILMA TTS v1 / F5-TTS ONNX runtime.
  *
- * v3.1 performance architecture:
- *  - XNNPACK first for optimized ARM floating-point kernels.
- *  - NNAPI second so Android may offload supported operators to GPU/NPU/DSP.
- *  - Tuned ORT CPU fallback on every device.
- *  - SessionOptions stay alive for the lifetime of the sessions.
+ * v3.2 focuses on practical mobile throughput:
+ *  - XNNPACK first for optimized ARM kernels.
+ *  - NNAPI FP16 attempt, then normal NNAPI, then tuned ORT CPU fallback.
+ *  - Selectable F5 refinement counts from 8 to 32 instead of forcing 32.
+ *  - Efficient direct tensor-buffer extraction for decoded PCM.
  *
  * No network call, account, API key or remote inference is used at runtime.
  */
@@ -35,6 +38,17 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
     val sampleRate: Int = 24_000
     val workerThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+    val deviceName: String = buildString {
+        append(Build.MANUFACTURER)
+        append(' ')
+        append(Build.MODEL)
+        if (Build.VERSION.SDK_INT >= 31) {
+            val soc = Build.SOC_MODEL
+            if (soc.isNotBlank()) append(" · ").append(soc)
+        } else if (Build.HARDWARE.isNotBlank()) {
+            append(" · ").append(Build.HARDWARE)
+        }
+    }
 
     @Volatile
     var backendName: String = "not loaded"
@@ -42,6 +56,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
     private enum class Backend {
         XNNPACK,
+        NNAPI_FP16,
         NNAPI,
         CPU,
     }
@@ -59,25 +74,24 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
             .bufferedReader(Charsets.UTF_8)
             .useLines { lines ->
                 val map = LinkedHashMap<String, Int>()
-                lines.forEachIndexed { index, raw ->
-                    val token = raw.removeSuffix("\r")
-                    map[token] = index
-                }
+                lines.forEachIndexed { index, raw -> map[raw.removeSuffix("\r")] = index }
                 map
             }
         require(vocab.isNotEmpty()) { "SILMA vocabulary is missing" }
 
         val candidates = buildList {
-            // ORT's own Android guidance recommends XNNPACK first for non-quantized models.
             add(Backend.XNNPACK)
-            if (Build.VERSION.SDK_INT >= 27) add(Backend.NNAPI)
+            if (Build.VERSION.SDK_INT >= 27) {
+                add(Backend.NNAPI_FP16)
+                add(Backend.NNAPI)
+            }
             add(Backend.CPU)
         }
 
         var lastError: Throwable? = null
         for (backend in candidates) {
             closeSessionsOnly()
-            progress?.invoke("Trying ${backendLabel(backend)} acceleration…")
+            progress?.invoke("Trying ${backendLabel(backend)}…")
             try {
                 val options = createOptions(backend)
                 sessionOptions = options
@@ -85,7 +99,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                 transformer = env.createSession(transformerFile.absolutePath, options)
                 decoder = env.createSession(decodeFile.absolutePath, options)
                 backendName = backendLabel(backend)
-                progress?.invoke("SILMA ready · $backendName · $workerThreads compute threads")
+                progress?.invoke("SILMA ready · $backendName · $workerThreads threads")
                 return
             } catch (t: Throwable) {
                 lastError = t
@@ -93,10 +107,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
             }
         }
 
-        throw IllegalStateException(
-            "Unable to initialize SILMA on XNNPACK, NNAPI or CPU",
-            lastError,
-        )
+        throw IllegalStateException("Unable to initialize SILMA acceleration backend", lastError)
     }
 
     private fun createOptions(backend: Backend): OrtSession.SessionOptions {
@@ -109,19 +120,18 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
         when (backend) {
             Backend.XNNPACK -> {
-                // XNNPACK owns its own optimized thread pool. ORT recommends one ORT
-                // intra-op thread and disabling ORT spinning to avoid contention.
                 options.setIntraOpNumThreads(1)
                 options.addConfigEntry("session.intra_op.allow_spinning", "0")
-                options.addXnnpack(
-                    mapOf("intra_op_num_threads" to workerThreads.toString())
-                )
+                options.addXnnpack(mapOf("intra_op_num_threads" to workerThreads.toString()))
+            }
+            Backend.NNAPI_FP16 -> {
+                options.setIntraOpNumThreads(workerThreads.coerceAtMost(6))
+                options.addConfigEntry("session.intra_op.allow_spinning", "0")
+                options.addNnapi(EnumSet.of(NNAPIFlags.USE_FP16))
             }
             Backend.NNAPI -> {
-                // Keep CPU fallback enabled because transformer graphs may contain a
-                // small number of operators unsupported by a specific phone's NNAPI driver.
                 options.setIntraOpNumThreads(workerThreads.coerceAtMost(6))
-                options.addConfigEntry("session.intra_op.allow_spinning", "1")
+                options.addConfigEntry("session.intra_op.allow_spinning", "0")
                 options.addNnapi()
             }
             Backend.CPU -> {
@@ -136,6 +146,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
     private fun backendLabel(backend: Backend): String = when (backend) {
         Backend.XNNPACK -> "XNNPACK ARM"
+        Backend.NNAPI_FP16 -> "Android NNAPI FP16"
         Backend.NNAPI -> "Android NNAPI"
         Backend.CPU -> "ORT tuned CPU"
     }
@@ -156,17 +167,15 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
     /**
      * Synthesize one semantic chunk.
-     *
-     * SILMA's exported transformer is a 32-NFE graph. We therefore keep the full
-     * 32-step trajectory for production quality instead of stopping early and
-     * decoding a partially denoised signal.
+     * 32 is the model's full exported trajectory. Lower counts intentionally decode
+     * an earlier denoising state for much faster mobile previews/full books.
      */
     @Synchronized
     fun synthesize(
         reference: VoiceReference,
         text: String,
         speed: Float = 1.0f,
-        nfeSteps: Int = 32,
+        nfeSteps: Int = 12,
         cancelled: AtomicBoolean? = null,
         onStep: ((Int, Int) -> Unit)? = null,
     ): ShortArray {
@@ -177,6 +186,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         val preSession = requireNotNull(preprocess)
         val transSession = requireNotNull(transformer)
         val decSession = requireNotNull(decoder)
+        val steps = nfeSteps.coerceIn(MIN_STEPS, MAX_STEPS)
 
         val refText = normalizeReferenceText(reference.transcript)
         val cleanText = ArabicText.prepareForNarration(text)
@@ -194,14 +204,13 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                 longArrayOf(1, ids.size.toLong())
             ).use { textTensor ->
                 OnnxTensor.createTensor(env, LongBuffer.wrap(longArrayOf(maxDuration)), longArrayOf(1)).use { durationTensor ->
-                    val preResult = preSession.run(
+                    preSession.run(
                         mapOf(
                             "audio" to audioTensor,
                             "text_ids" to textTensor,
                             "max_duration" to durationTensor,
                         )
-                    )
-                    preResult.use { pre ->
+                    ).use { pre ->
                         val ropeCosQ = tensor(pre, "rope_cos_q")
                         val ropeSinQ = tensor(pre, "rope_sin_q")
                         val ropeCosK = tensor(pre, "rope_cos_k")
@@ -220,9 +229,6 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                         var previousTransformerResult: OrtSession.Result? = null
 
                         try {
-                            // The downloaded SILMA export is configured for NFE=32.
-                            // Clamp to 32 to protect quality and graph semantics.
-                            val steps = nfeSteps.coerceIn(32, 32)
                             for (i in 0 until steps - 1) {
                                 if (cancelled?.get() == true) throw GenerationCancelled()
 
@@ -251,14 +257,13 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                             }
 
                             if (cancelled?.get() == true) throw GenerationCancelled()
-                            val decoded = decSession.run(
+                            decSession.run(
                                 mapOf(
                                     "denoised" to currentNoise,
                                     "ref_signal_len" to refSignalLen,
                                 )
-                            )
-                            decoded.use { out ->
-                                return extractPcm16(tensor(out, "output_audio").value)
+                            ).use { out ->
+                                return extractPcm16(tensor(out, "output_audio"))
                             }
                         } finally {
                             if (ownsInitialTime) runCatching { currentTime.close() }
@@ -301,11 +306,28 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         val value: OnnxValue = result.get(name).orElseThrow {
             IllegalStateException("SILMA ONNX output '$name' is missing")
         }
-        return value as? OnnxTensor
-            ?: error("SILMA ONNX output '$name' is not a tensor")
+        return value as? OnnxTensor ?: error("SILMA ONNX output '$name' is not a tensor")
     }
 
-    private fun extractPcm16(value: Any): ShortArray {
+    private fun extractPcm16(tensor: OnnxTensor): ShortArray {
+        tensor.getFloatBuffer()?.let { buffer ->
+            val out = ShortArray(buffer.remaining())
+            var i = 0
+            while (buffer.hasRemaining()) {
+                out[i++] = (buffer.get().coerceIn(-1f, 1f) * 32767f)
+                    .toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+            return out
+        }
+        tensor.getShortBuffer()?.let { buffer ->
+            val out = ShortArray(buffer.remaining())
+            buffer.get(out)
+            return out
+        }
+        return extractPcm16Fallback(tensor.value)
+    }
+
+    private fun extractPcm16Fallback(value: Any): ShortArray {
         val shorts = ArrayList<Short>()
         val floats = ArrayList<Float>()
         fun walk(v: Any?) {
@@ -380,6 +402,8 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
     class GenerationCancelled : RuntimeException()
 
     companion object {
+        const val MIN_STEPS = 8
+        const val MAX_STEPS = 32
         const val DEFAULT_REFERENCE_ASSET = "silma-f5/default_ref.wav"
         const val DEFAULT_REFERENCE_TEXT =
             "ويدقق النظر في القرآن الكريم وسائر الكتب السماوية ويتبع مسالك الرسل العظام عليهم الصلاة والسلام."
