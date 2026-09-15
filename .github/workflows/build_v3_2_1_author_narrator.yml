@@ -1,0 +1,225 @@
+name: Build LATIF Voice Studio v3.2.1 Author Narrator
+
+on:
+  push:
+    branches:
+      - latif-voice-studio-v3.2.1-author-narrator
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Prepare preinstalled Android SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+          test -x "$SDK_ROOT/build-tools/35.0.0/zipalign"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Stage Author Narrator source and SILMA assets
+        run: |
+          set -euxo pipefail
+          rm -rf standalone-android release
+          cp -a v2-src/standalone-android standalone-android
+          mkdir -p release
+
+          BUILD=standalone-android/app/build.gradle.kts
+          SERVICE=standalone-android/app/src/main/java/com/latif/audiobook/offline/AudiobookService.kt
+          ENGINE=standalone-android/app/src/main/java/com/latif/audiobook/offline/SilmaF5Engine.kt
+
+          grep -q 'versionName = "3.2.1-author-narrator"' "$BUILD"
+          grep -q 'versionCode = 10' "$BUILD"
+          grep -q 'applicationId = "com.latif.audiobook.offline"' "$BUILD"
+          grep -q 'const val DEFAULT_NFE_STEPS = 32' "$SERVICE"
+          grep -q 'const val AUTHOR_SPEED = 0.90f' "$SERVICE"
+          grep -q 'val profile = NarrationProfile.LITERARY' "$SERVICE"
+          grep -q 'val refUri: Uri? = null' "$SERVICE"
+          grep -q 'writer.writePcm16(audio)' "$SERVICE"
+          if grep -q 'edgeFade(audio' "$SERVICE"; then
+            echo 'Author Narrator build must not apply edgeFade to synthesized PCM' >&2
+            exit 1
+          fi
+          grep -q 'NNAPI_FP16' "$ENGINE"
+          grep -q 'MIN_STEPS = 8' "$ENGINE"
+
+          ASSETS=standalone-android/app/src/main/assets/silma-f5
+          mkdir -p "$ASSETS"
+          BASE='https://huggingface.co/OpenVoiceOS/phoonnx-f5tts/resolve/main/silma-tts-v1'
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/model.onnx" "$BASE/model.onnx?download=true"
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/F5_Preprocess.onnx" "$BASE/F5_Preprocess.onnx?download=true"
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/F5_Decode.onnx" "$BASE/F5_Decode.onnx?download=true"
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/vocab.txt" "$BASE/vocab.txt?download=true"
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/config.json" "$BASE/config.json?download=true"
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/default_ref.wav" 'https://huggingface.co/spaces/silma-ai/silma-tts-v1-demo/resolve/main/ar.ref.24k.wav?download=true'
+
+          test "$(stat -c%s "$ASSETS/F5_Preprocess.onnx")" -eq 73904440
+          test "$(stat -c%s "$ASSETS/model.onnx")" -eq 612437669
+          test "$(stat -c%s "$ASSETS/F5_Decode.onnx")" -eq 62546929
+          test "$(stat -c%s "$ASSETS/config.json")" -eq 156367
+          test "$(stat -c%s "$ASSETS/default_ref.wav")" -eq 372680
+          test "$(stat -c%s "$ASSETS/vocab.txt")" -eq 36357
+
+      - name: Verify SILMA ONNX interfaces
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          python -m pip install --quiet 'onnx>=1.17,<2'
+          python - <<'PY'
+          import onnx
+          from pathlib import Path
+          root = Path('app/src/main/assets/silma-f5')
+          expected = {
+              'F5_Preprocess.onnx': ({'audio','text_ids','max_duration'}, {'noise','rope_cos_q','rope_sin_q','rope_cos_k','rope_sin_k','cat_mel_text','cat_mel_text_drop','ref_signal_len'}),
+              'model.onnx': ({'noise','rope_cos_q','rope_sin_q','rope_cos_k','rope_sin_k','cat_mel_text','cat_mel_text_drop','time_step.1'}, {'denoised','time_step'}),
+              'F5_Decode.onnx': ({'denoised','ref_signal_len'}, {'output_audio'}),
+          }
+          for name,(ri,ro) in expected.items():
+              m=onnx.load(str(root/name), load_external_data=False)
+              ins={x.name for x in m.graph.input}; outs={x.name for x in m.graph.output}
+              assert ri <= ins, (name, ri-ins)
+              assert ro <= outs, (name, ro-outs)
+              print(name, 'OK')
+          PY
+
+      - name: Compile and assemble release
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          gradle --no-daemon --stacktrace :app:compileReleaseKotlin
+          gradle --no-daemon --stacktrace :app:assembleRelease
+          APK=app/build/outputs/apk/release/app-release-unsigned.apk
+          test -s "$APK"
+          unzip -t "$APK" >/dev/null
+          for asset in F5_Preprocess.onnx model.onnx F5_Decode.onnx config.json default_ref.wav vocab.txt; do
+            unzip -l "$APK" | grep -q "assets/silma-f5/$asset"
+          done
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libonnxruntime.so'
+          stat -c '%n %s bytes' "$APK"
+
+      - name: Align APK
+        run: |
+          set -euxo pipefail
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          INPUT=standalone-android/app/build/outputs/apk/release/app-release-unsigned.apk
+          OUTPUT=release/LATIF-VOICE-STUDIO-v3.2.1-AUTHOR-NARRATOR-ALIGNED.apk
+          "$BT/zipalign" -f -p 4 "$INPUT" "$OUTPUT"
+          "$BT/zipalign" -c -v 4 "$OUTPUT" >/dev/null
+
+      - name: Sign with permanent LATIF identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VAULT_RUN=34709949240
+          VAULT_NAME='LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT'
+          VAULT_ZIP_NAME='LATIF-AUDIOBOOK-AI-v2.0.1-FUTURE-UPGRADE-VAULT.zip'
+          EXPECTED_CERT_SHA256='ee0283bc5a72f2b7a9b7285e2de17c52a9dfb524fb58354c32aefb4fbba258f5'
+
+          rm -rf /tmp/latif-vault-download /tmp/latif-vault
+          mkdir -p /tmp/latif-vault-download /tmp/latif-vault
+          gh run download "$VAULT_RUN" --repo LAtifword/LAtifword-Audiobook --name "$VAULT_NAME" --dir /tmp/latif-vault-download
+          test -s "/tmp/latif-vault-download/$VAULT_ZIP_NAME"
+          unzip -q "/tmp/latif-vault-download/$VAULT_ZIP_NAME" -d /tmp/latif-vault
+
+          KEYSTORE=/tmp/latif-vault/LATIF-AUDIOBOOK-AI-RELEASE-KEY.jks
+          PASS_NOTE=/tmp/latif-vault/KEEP-THIS-KEY-PRIVATE.txt
+          test -s "$KEYSTORE"
+          test -s "$PASS_NOTE"
+          STORE_PASS="$(sed -n 's/^Store password: //p' "$PASS_NOTE" | head -n1)"
+          test -n "$STORE_PASS"
+          export LATIF_STORE_PASS="$STORE_PASS"
+
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          INPUT=release/LATIF-VOICE-STUDIO-v3.2.1-AUTHOR-NARRATOR-ALIGNED.apk
+          SIGNED=release/LATIF-VOICE-STUDIO-v3.2.1-AUTHOR-NARRATOR-SIGNED.apk
+          "$BT/apksigner" sign \
+            --ks "$KEYSTORE" \
+            --ks-key-alias latif-audiobook-release \
+            --ks-pass env:LATIF_STORE_PASS \
+            --key-pass env:LATIF_STORE_PASS \
+            --v1-signing-enabled true \
+            --v2-signing-enabled true \
+            --v3-signing-enabled true \
+            --out "$SIGNED" "$INPUT"
+
+          "$BT/apksigner" verify --verbose --print-certs "$SIGNED" | tee release/SIGNATURE-VERIFY.txt
+          CERT_SHA="$("$BT/apksigner" verify --print-certs "$SIGNED" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr '[:upper:]' '[:lower:]' | head -n1)"
+          test "$CERT_SHA" = "$EXPECTED_CERT_SHA256"
+          "$BT/zipalign" -c -v 4 "$SIGNED" >/dev/null
+          unzip -t "$SIGNED" >/dev/null
+          sha256sum "$SIGNED" > release/SHA256SUMS.txt
+          stat -c '%n %s bytes' "$SIGNED"
+
+          unset LATIF_STORE_PASS STORE_PASS
+          rm -rf /tmp/latif-vault-download /tmp/latif-vault
+
+      - name: Build release manifest
+        run: |
+          set -euxo pipefail
+          cat > release/MODEL-MANIFEST.txt <<'EOF'
+          LATIF VOICE STUDIO v3.2.1 AUTHOR NARRATOR
+          Primary TTS: SILMA TTS v1 / F5-TTS ONNX
+          Narrator reference: bundled silma-f5/default_ref.wav
+          Narration profile: Literary
+          Speed: 0.90x fixed
+          F5 trajectory: 32 steps fixed
+          Edge/crossfade: none in AudiobookService
+          Runtime: Microsoft ONNX Runtime Android 1.28.0
+          Backend order: XNNPACK ARM -> Android NNAPI FP16 -> Android NNAPI -> tuned ORT CPU
+          Output: 24 kHz -> AAC-LC 128 kbps M4A
+          Package: com.latif.audiobook.offline
+          Version: 3.2.1-author-narrator (versionCode 10)
+          ABI: arm64-v8a
+          Runtime API/account/server: none
+          EOF
+          git rev-parse HEAD > release/SOURCE-COMMIT.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-VOICE-STUDIO-v3.2.1-AUTHOR-NARRATOR-SIGNED
+          path: |
+            release/LATIF-VOICE-STUDIO-v3.2.1-AUTHOR-NARRATOR-SIGNED.apk
+            release/SIGNATURE-VERIFY.txt
+            release/SHA256SUMS.txt
+            release/MODEL-MANIFEST.txt
+            release/SOURCE-COMMIT.txt
+          retention-days: 30
+          compression-level: 0
+
+      - name: Publish installable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          APK=release/LATIF-VOICE-STUDIO-v3.2.1-AUTHOR-NARRATOR-SIGNED.apk
+          TAG="latif-voice-studio-v3.2.1-author-narrator-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" \
+            --repo LAtifword/LAtifword-Audiobook \
+            --target "$GITHUB_SHA" \
+            --title 'LATIF Voice Studio 3.2.1 — Author Narrator' \
+            --notes 'Fully offline deterministic Author Narrator build. Every upload uses the bundled SILMA Arabic narrator reference, Literary pacing, fixed 0.90x speed, and the full 32-step F5 trajectory with no service edge fade. Preserves the same package and permanent LATIF signing identity. Includes XNNPACK/NNAPI FP16/NNAPI/CPU fallback and real ETA/RTF reporting.' \
+            "$APK" release/SIGNATURE-VERIFY.txt release/SHA256SUMS.txt release/MODEL-MANIFEST.txt release/SOURCE-COMMIT.txt
