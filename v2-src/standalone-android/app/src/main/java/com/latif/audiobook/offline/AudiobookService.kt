@@ -132,6 +132,7 @@ class AudiobookService : Service() {
                     )
                 }
 
+                val audioMs = audio.size * 1000L / engine.sampleRate
                 try {
                     writer.writePcm16(audio)
                 } finally {
@@ -145,7 +146,6 @@ class AudiobookService : Service() {
                 writer.writeSilence(pauseMs)
 
                 val chunkMs = SystemClock.elapsedRealtime() - chunkStart
-                val audioMs = clean.length.coerceAtLeast(1) * 0L
                 completedMs += chunkMs
                 completedAudioMs += audioMs
                 completedCount++
