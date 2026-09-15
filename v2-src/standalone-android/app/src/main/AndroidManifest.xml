@@ -23,6 +23,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".AudiobookPlayerActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified" />
+
         <service
             android:name=".AudiobookService"
             android:exported="false"
