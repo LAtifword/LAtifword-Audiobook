@@ -63,7 +63,6 @@ android {
         }
     }
 
-    // Model assets must remain stored/uncompressed so AssetManager.openFd() can verify them.
     androidResources {
         noCompress += listOf("onnx", "bin", "json", "txt", "wav")
     }
@@ -98,6 +97,7 @@ tasks.matching { it.name == "preReleaseBuild" }.configureEach {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 
