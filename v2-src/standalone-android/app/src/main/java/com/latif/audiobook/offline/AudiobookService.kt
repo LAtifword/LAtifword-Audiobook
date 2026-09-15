@@ -11,11 +11,22 @@ import android.os.SystemClock
 import android.util.Log
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /** Foreground audiobook renderer for LATIF Voice Studio v3.3 Author Narrator. */
 class AudiobookService : Service() {
     private val cancelled = AtomicBoolean(false)
+    private val serviceJob = SupervisorJob()
+    private val serviceScope = CoroutineScope(serviceJob + Dispatchers.Default)
+    private var renderJob: Job? = null
+
     @Volatile private var running = false
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -26,9 +37,17 @@ class AudiobookService : Service() {
         createChannel()
     }
 
+    override fun onDestroy() {
+        cancelled.set(true)
+        serviceScope.cancel()
+        runCatching { wakeLock?.release() }
+        super.onDestroy()
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_CANCEL) {
             cancelled.set(true)
+            renderJob?.cancel()
             return START_NOT_STICKY
         }
         if (running || intent == null) return START_NOT_STICKY
@@ -44,14 +63,14 @@ class AudiobookService : Service() {
         running = true
         cancelled.set(false)
         startForeground(NOTIFICATION_ID, notification("Preparing SILMA Author Narrator…", 0, true))
-        Thread {
+        renderJob = serviceScope.launch {
             runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
             runJob(uri, rawText, title, displayName, previewOnly)
-        }.start()
+        }
         return START_NOT_STICKY
     }
 
-    private fun runJob(
+    private suspend fun runJob(
         uri: Uri?,
         rawText: String?,
         title: String,
@@ -82,8 +101,23 @@ class AudiobookService : Service() {
             require(allChunks.isNotEmpty()) { "No narration sections were created." }
             val chunks = if (previewOnly) listOf(allChunks.first()) else allChunks
 
-            engine = SilmaF5Engine(this)
-            engine.load { message -> sendProgress(3, message) }
+            val startup = SilmaStartupController(this)
+            engine = startup.load { state ->
+                when (state) {
+                    SilmaStartupState.Idle -> Unit
+                    is SilmaStartupState.Starting -> {
+                        val mappedProgress = 2 + ((state.progress.coerceIn(0, 100) * 2) / 100)
+                        sendProgress(mappedProgress, state.message)
+                    }
+                    is SilmaStartupState.Ready -> sendProgress(
+                        4,
+                        "SILMA ready · ${state.backend} · ${state.workerThreads} threads · startup ${state.elapsedMs} ms",
+                    )
+                    is SilmaStartupState.Failed -> sendProgress(4, state.message)
+                    SilmaStartupState.Cancelled -> sendProgress(4, "SILMA startup cancelled")
+                }
+            }
+
             sendProgress(4, "Loading permanent author narrator voice…")
             val reference = engine.builtInReference()
 
@@ -139,7 +173,6 @@ class AudiobookService : Service() {
                     )
                 }
 
-                // Capture duration before zeroing the PCM buffer for memory hygiene.
                 val audioMs = audio.size * 1000L / engine.sampleRate
                 try {
                     activeWriter.writePcm16(audio)
@@ -187,7 +220,6 @@ class AudiobookService : Service() {
             sendProgress(98, if (previewOnly) "Mastering author narrator preview…" else "Mastering final audiobook…")
             val out = activeWriter.finish()
 
-            // Sidecar publication is recoverable: the completed audio is never discarded if metadata fails.
             val publishedSidecar = runCatching {
                 ChapterSidecarJson.publishAlongsideAudio(
                     context = this,
@@ -215,6 +247,10 @@ class AudiobookService : Service() {
 
             sendComplete(out, outputTitle, publishedSidecar?.uri)
             updateNotification(if (previewOnly) "Preview ready" else "Audiobook ready", 100, false)
+        } catch (_: CancellationException) {
+            writer?.abort()
+            sendFailed("Cancelled")
+            updateNotification("Generation cancelled", 0, false)
         } catch (_: SilmaF5Engine.GenerationCancelled) {
             writer?.abort()
             sendFailed("Cancelled")
@@ -237,6 +273,8 @@ class AudiobookService : Service() {
         } finally {
             runCatching { engine?.close() }
             runCatching { wakeLock?.release() }
+            wakeLock = null
+            renderJob = null
             running = false
             stopForeground(false)
             stopSelf()
