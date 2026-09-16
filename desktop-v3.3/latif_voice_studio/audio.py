@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
 
 import av
 import numpy as np
+from av.audio.frame import AudioFrame
+from av.audio.resampler import AudioResampler
 
 
 @dataclass(frozen=True)
@@ -19,7 +21,8 @@ class ChapterTiming:
 
 
 def safe_filename(value: str) -> str:
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", value).strip(" ._")
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", value)
+    cleaned = re.sub(r"_+", "_", cleaned).strip(" ._")
     return cleaned[:140] or "LATIF Audiobook"
 
 
@@ -54,7 +57,7 @@ class M4aStreamWriter:
         self.stream = self.container.add_stream("aac", rate=self.sample_rate)
         self.stream.bit_rate = self.bitrate
         self.stream.layout = "mono"
-        self.resampler = av.AudioResampler(format="fltp", layout="mono", rate=self.sample_rate)
+        self.resampler = AudioResampler(format="fltp", layout="mono", rate=self.sample_rate)
         self.submitted_samples = 0
         self.closed = False
 
@@ -62,7 +65,7 @@ class M4aStreamWriter:
     def duration_ms(self) -> int:
         return int(self.submitted_samples * 1000 / self.sample_rate)
 
-    def _encode_frame(self, frame: av.AudioFrame) -> None:
+    def _encode_frame(self, frame: AudioFrame) -> None:
         for converted in self.resampler.resample(frame):
             for packet in self.stream.encode(converted):
                 self.container.mux(packet)
@@ -73,12 +76,11 @@ class M4aStreamWriter:
         pcm = np.asarray(samples, dtype=np.int16).reshape(-1)
         if pcm.size == 0:
             return
-        # Bound frame sizes so a long chunk never creates a second giant encoder buffer.
         frame_samples = 4096
         offset = 0
         while offset < pcm.size:
             block = np.ascontiguousarray(pcm[offset : offset + frame_samples])
-            frame = av.AudioFrame.from_ndarray(block.reshape(1, -1), format="s16", layout="mono")
+            frame = AudioFrame.from_ndarray(block.reshape(1, -1), format="s16", layout="mono")
             frame.sample_rate = self.sample_rate
             frame.pts = self.submitted_samples
             frame.time_base = Fraction(1, self.sample_rate)
