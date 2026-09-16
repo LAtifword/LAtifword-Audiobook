@@ -1,0 +1,152 @@
+name: Build LATIF Voice Studio Desktop v3.3 Windows
+
+on:
+  push:
+    branches:
+      - latif-voice-studio-v3.3-desktop-windows
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: desktop-v3.3/requirements.txt
+
+      - name: Install desktop build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r desktop-v3.3/requirements.txt
+          python -m pip install pyinstaller==6.22.0 pytest onnx>=1.17,<2
+
+      - name: Stage SILMA F5 model assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = 'desktop-v3.3/models/silma-f5'
+          New-Item -ItemType Directory -Force -Path $assets | Out-Null
+          $base = 'https://huggingface.co/OpenVoiceOS/phoonnx-f5tts/resolve/main/silma-tts-v1'
+          curl.exe -L --fail --retry 8 --retry-delay 5 -o "$assets/model.onnx" "$base/model.onnx?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 -o "$assets/F5_Preprocess.onnx" "$base/F5_Preprocess.onnx?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 -o "$assets/F5_Decode.onnx" "$base/F5_Decode.onnx?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 -o "$assets/vocab.txt" "$base/vocab.txt?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 -o "$assets/config.json" "$base/config.json?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 -o "$assets/default_ref.wav" 'https://huggingface.co/spaces/silma-ai/silma-tts-v1-demo/resolve/main/ar.ref.24k.wav?download=true'
+
+      - name: Verify model sizes and ONNX interfaces
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = 'desktop-v3.3'
+          @'
+          from pathlib import Path
+          import onnx
+          root = Path('desktop-v3.3/models/silma-f5')
+          sizes = {
+              'F5_Preprocess.onnx': 73904440,
+              'model.onnx': 612437669,
+              'F5_Decode.onnx': 62546929,
+              'config.json': 156367,
+              'default_ref.wav': 372680,
+              'vocab.txt': 36357,
+          }
+          for name, expected in sizes.items():
+              path = root / name
+              assert path.is_file(), name
+              assert path.stat().st_size == expected, (name, path.stat().st_size, expected)
+              print(name, path.stat().st_size)
+          expected_io = {
+              'F5_Preprocess.onnx': ({'audio','text_ids','max_duration'}, {'noise','rope_cos_q','rope_sin_q','rope_cos_k','rope_sin_k','cat_mel_text','cat_mel_text_drop','ref_signal_len'}),
+              'model.onnx': ({'noise','rope_cos_q','rope_sin_q','rope_cos_k','rope_sin_k','cat_mel_text','cat_mel_text_drop','time_step.1'}, {'denoised','time_step'}),
+              'F5_Decode.onnx': ({'denoised','ref_signal_len'}, {'output_audio'}),
+          }
+          for name, (required_in, required_out) in expected_io.items():
+              model = onnx.load(str(root / name), load_external_data=False)
+              inputs = {node.name for node in model.graph.input}
+              outputs = {node.name for node in model.graph.output}
+              assert required_in <= inputs, (name, required_in - inputs)
+              assert required_out <= outputs, (name, required_out - outputs)
+              print(name, 'interface OK')
+          '@ | python -
+
+      - name: Validate Python source and tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = 'desktop-v3.3'
+          python -m compileall -q desktop-v3.3/latif_voice_studio
+          python -m pytest -q desktop-v3.3/tests
+          python -c "import onnxruntime as ort; print('ORT providers:', ort.get_available_providers()); assert 'DmlExecutionProvider' in ort.get_available_providers()"
+          python -c "import latif_voice_studio.app; print('Desktop UI import OK')"
+
+      - name: Build portable Windows application
+        working-directory: desktop-v3.3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pyinstaller --noconfirm --clean LATIFVoiceStudio.spec
+          $bundle = 'dist/LATIF-Voice-Studio-3.3'
+          if (-not (Test-Path "$bundle/LATIF-Voice-Studio-3.3.exe")) { throw 'Desktop EXE missing' }
+          $model = Get-ChildItem -Path $bundle -Recurse -Filter model.onnx | Where-Object { $_.Length -eq 612437669 } | Select-Object -First 1
+          if (-not $model) { throw 'Bundled SILMA transformer model missing' }
+          Write-Host "Bundled model: $($model.FullName)"
+
+      - name: Build release package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item desktop-v3.3/README.md desktop-v3.3/dist/LATIF-Voice-Studio-3.3/README.txt
+          @'
+          LATIF VOICE STUDIO DESKTOP 3.3.0
+          Platform: Windows x64 portable
+          Runtime: Python 3.12 bundled with PyInstaller
+          TTS: SILMA TTS v1 / F5-TTS ONNX
+          Model: embedded/offline, 24 kHz
+          Backend order: DirectML GPU -> ONNX Runtime CPU fallback
+          Default narrator: bundled LATIF Author Narrator
+          Default speed: 0.90x
+          Default quality: 32 F5 steps
+          Inputs: PDF / EPUB / DOCX / TXT / pasted text
+          Output: AAC-LC M4A + .chapters.json sidecar
+          Runtime API/account/server: none
+          '@ | Set-Content -Encoding UTF8 desktop-v3.3/dist/LATIF-Voice-Studio-3.3/MODEL-MANIFEST.txt
+          $zip = 'release/LATIF-VOICE-STUDIO-DESKTOP-v3.3.0-WINDOWS-X64-PORTABLE.zip'
+          Compress-Archive -Path 'desktop-v3.3/dist/LATIF-Voice-Studio-3.3/*' -DestinationPath $zip -CompressionLevel Fastest -Force
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          "$hash  LATIF-VOICE-STUDIO-DESKTOP-v3.3.0-WINDOWS-X64-PORTABLE.zip" | Set-Content -Encoding ASCII release/SHA256SUMS.txt
+          git rev-parse HEAD | Set-Content -Encoding ASCII release/SOURCE-COMMIT.txt
+          Get-Item $zip | Format-List Name,Length
+          Get-Content release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-VOICE-STUDIO-DESKTOP-v3.3.0-WINDOWS-X64
+          path: |
+            release/LATIF-VOICE-STUDIO-DESKTOP-v3.3.0-WINDOWS-X64-PORTABLE.zip
+            release/SHA256SUMS.txt
+            release/SOURCE-COMMIT.txt
+          compression-level: 0
+          retention-days: 30
+
+      - name: Publish desktop release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "latif-voice-studio-desktop-v3.3.0-$env:GITHUB_RUN_NUMBER"
+          gh release create $tag `
+            release/LATIF-VOICE-STUDIO-DESKTOP-v3.3.0-WINDOWS-X64-PORTABLE.zip `
+            release/SHA256SUMS.txt `
+            release/SOURCE-COMMIT.txt `
+            --title 'LATIF Voice Studio Desktop 3.3.0 — Windows x64' `
+            --notes 'Fully offline Windows desktop audiobook studio. Bundles SILMA F5, DirectML GPU acceleration with CPU fallback, PDF/EPUB/DOCX/TXT ingestion, one-section preview, full-book M4A generation, ETA/RTF reporting, optional WAV reference voice, and chapter sidecar output. No API, cloud account, Python installation, or runtime model download required.'
