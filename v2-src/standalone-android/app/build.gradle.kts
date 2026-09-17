@@ -11,8 +11,8 @@ android {
         applicationId = "com.latif.audiobook.offline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "3.0.0"
+        versionCode = 9
+        versionName = "3.2.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -47,7 +47,6 @@ android {
     }
 
     androidResources {
-        // The neural weights are already binary-compressed and need random access/copy-once extraction.
         noCompress += listOf("onnx", "bin", "json", "txt", "wav")
     }
 }
