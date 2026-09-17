@@ -19,6 +19,26 @@ on:
         description: 'Optional integer seed; blank means random'
         required: false
         default: ''
+      title:
+        description: 'Audiobook title used in M4A metadata'
+        required: true
+        default: 'LATIF Audiobook'
+      author:
+        description: 'Author name'
+        required: false
+        default: ''
+      narrator:
+        description: 'Narrator name'
+        required: false
+        default: 'LATIF Author Narrator'
+      cover_path:
+        description: 'Optional repository path to a JPEG/PNG cover image'
+        required: false
+        default: ''
+      chapters_path:
+        description: 'Optional repository path to chapters.json'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -34,6 +54,11 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
       - name: Install SILMA TTS
         run: |
@@ -80,9 +105,38 @@ jobs:
                   print(p, 'seconds=', round(w.getnframes()/w.getframerate(),2), 'rate=', w.getframerate(), 'channels=', w.getnchannels())
           PY
 
+      - name: Package WAV as M4A with metadata and cover
+        env:
+          TITLE: ${{ inputs.title }}
+          AUTHOR: ${{ inputs.author }}
+          NARRATOR: ${{ inputs.narrator }}
+          COVER_PATH: ${{ inputs.cover_path }}
+          CHAPTERS_PATH: ${{ inputs.chapters_path }}
+        run: |
+          set -euo pipefail
+          args=(
+            --wav audiobook_output/audiobook_master.wav
+            --output audiobook_output/audiobook_master.m4a
+            --title "$TITLE"
+            --author "$AUTHOR"
+            --narrator "$NARRATOR"
+            --codec aac
+            --bitrate 128k
+          )
+          if [ -n "$COVER_PATH" ]; then
+            test -s "$COVER_PATH"
+            args+=(--cover "$COVER_PATH")
+          fi
+          if [ -n "$CHAPTERS_PATH" ]; then
+            test -s "$CHAPTERS_PATH"
+            args+=(--chapters-json "$CHAPTERS_PATH")
+          fi
+          python voice_lab/package_m4a.py "${args[@]}"
+          test -s audiobook_output/audiobook_master.m4a
+
       - uses: actions/upload-artifact@v4
         with:
-          name: silma-audiobook-pure-wav
+          name: silma-audiobook-wav-m4a-metadata
           path: audiobook_output/
           compression-level: 0
           retention-days: 30
