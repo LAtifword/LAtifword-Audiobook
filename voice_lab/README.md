@@ -33,3 +33,39 @@ python voice_lab/generate_audiobook.py \
 ```
 
 For deterministic reruns, pass `--seed 1234`. The default segment size is 4,200 characters to stay below service/model context limits.
+
+## Convert WAV to M4A with metadata and cover art
+
+Install FFmpeg, then run:
+
+```bash
+python voice_lab/package_m4a.py \
+  --wav audiobook_output/audiobook_master.wav \
+  --output audiobook_output/my-book.m4a \
+  --cover cover.jpg \
+  --chapters-json audiobook_output/chapters.json \
+  --title 'My Book' \
+  --author 'Author Name' \
+  --album 'My Book' \
+  --narrator 'LATIF Author Narrator' \
+  --year 2026 \
+  --genre Audiobook \
+  --description 'AI-generated audiobook for private author review' \
+  --codec aac \
+  --bitrate 128k
+```
+
+Use `--codec alac` instead of `--codec aac` for lossless M4A. AAC is smaller and widely compatible; ALAC preserves the WAV samples but produces a larger file.
+
+The script adds title, author, album, narrator, year, genre, description, embedded JPEG cover art, and MP4 chapter markers. It does not apply fades, normalization, compression, EQ, denoise, or gain changes. The only compression in AAC mode is the requested AAC encoding required by the M4A output format.
+
+The `chapters.json` file may be produced by the Android sidecar utility or use this shape:
+
+```json
+{
+  "chapters": [
+    {"title": "Chapter 1", "startMs": 0, "endMs": 180000},
+    {"title": "Chapter 2", "startMs": 180000, "endMs": 360000}
+  ]
+}
+```
