@@ -38,13 +38,13 @@ class AudiobookService : Service() {
 
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "LATIF Audiobook" }
         val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME)
-        val profile = NarrationProfile.fromOrdinal(intent.getIntExtra(EXTRA_PROFILE, NarrationProfile.LITERARY.ordinal))
-        val speed = intent.getFloatExtra(EXTRA_SPEED, profile.defaultSpeed).coerceIn(0.82f, 1.08f)
-        val refUri = intent.getStringExtra(EXTRA_REFERENCE_URI)?.takeIf { it.isNotBlank() }?.let(Uri::parse)
-        val refText = intent.getStringExtra(EXTRA_REFERENCE_TEXT).orEmpty()
+        // Permanent author narrator preset: every upload uses the same bundled voice and pacing.
+        val profile = NarrationProfile.LITERARY
+        val speed = AUTHOR_SPEED
+        val refUri: Uri? = null
+        val refText = ""
         val previewOnly = intent.getBooleanExtra(EXTRA_PREVIEW_ONLY, false)
-        val nfeSteps = intent.getIntExtra(EXTRA_NFE_STEPS, DEFAULT_NFE_STEPS)
-            .coerceIn(SilmaF5Engine.MIN_STEPS, SilmaF5Engine.MAX_STEPS)
+        val nfeSteps = DEFAULT_NFE_STEPS
 
         running = true
         cancelled.set(false)
@@ -132,7 +132,7 @@ class AudiobookService : Service() {
                     )
                 }
 
-                writer.writePcm16(edgeFade(audio, engine.sampleRate, 7))
+                writer.writePcm16(audio)
                 val pauseMs = when {
                     clean.endsWith("؟") || clean.endsWith("!") -> profile.questionPauseMs.coerceIn(80, 220)
                     clean.endsWith(".") || clean.endsWith("…") || clean.endsWith("؛") -> profile.sentencePauseMs.coerceIn(65, 180)
@@ -315,7 +315,8 @@ class AudiobookService : Service() {
         const val KEY_LAST_BACKEND = "lastBackend"
         const val KEY_LAST_NFE_STEPS = "lastNfeSteps"
         const val KEY_LAST_FIRST_SECTION_MS = "lastFirstSectionMs"
-        const val DEFAULT_NFE_STEPS = 12
+        const val DEFAULT_NFE_STEPS = 32
+        const val AUTHOR_SPEED = 0.90f
         private const val CHANNEL_ID = "latif_audiobook_render"
         private const val NOTIFICATION_ID = 7004
     }

@@ -1,0 +1,88 @@
+name: Generate SILMA audiobook
+
+on:
+  workflow_dispatch:
+    inputs:
+      text_path:
+        description: 'Repository path to UTF-8 manuscript text'
+        required: true
+        default: 'voice_lab/input/manuscript.txt'
+      reference_audio_path:
+        description: 'Repository path to authorized reference WAV'
+        required: true
+        default: 'voice_lab/input/reference.wav'
+      reference_text:
+        description: 'Exact transcript of the reference WAV'
+        required: true
+        default: 'ويدقق النظر في القرآن الكريم وسائر الكتب السماوية ويتبع مسالك الرسل العظام عليهم الصلاة والسلام.'
+      seed:
+        description: 'Optional integer seed; blank means random'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install SILMA TTS
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r voice_lab/requirements.txt
+
+      - name: Validate inputs
+        env:
+          TEXT_PATH: ${{ inputs.text_path }}
+          REF_PATH: ${{ inputs.reference_audio_path }}
+        run: |
+          set -euo pipefail
+          test -s "$TEXT_PATH"
+          test -s "$REF_PATH"
+          file "$REF_PATH"
+          python - <<'PY'
+          import wave, os
+          p=os.environ['REF_PATH']
+          with wave.open(p, 'rb') as w:
+              print('reference channels=',w.getnchannels(),'rate=',w.getframerate(),'frames=',w.getnframes())
+          PY
+
+      - name: Generate pure WAV clips and master
+        env:
+          TEXT_PATH: ${{ inputs.text_path }}
+          REF_PATH: ${{ inputs.reference_audio_path }}
+          REF_TEXT: ${{ inputs.reference_text }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          set -euo pipefail
+          args=(--text "$TEXT_PATH" --reference-audio "$REF_PATH" --reference-text "$REF_TEXT" --output-dir audiobook_output)
+          if [ -n "$SEED" ]; then args+=(--seed "$SEED"); fi
+          python voice_lab/generate_audiobook.py "${args[@]}"
+
+      - name: Inspect output
+        run: |
+          set -euo pipefail
+          ls -lh audiobook_output
+          python - <<'PY'
+          import wave
+          from pathlib import Path
+          for p in sorted(Path('audiobook_output').glob('*.wav')):
+              with wave.open(str(p),'rb') as w:
+                  print(p, 'seconds=', round(w.getnframes()/w.getframerate(),2), 'rate=', w.getframerate(), 'channels=', w.getnchannels())
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: silma-audiobook-pure-wav
+          path: audiobook_output/
+          compression-level: 0
+          retention-days: 30
