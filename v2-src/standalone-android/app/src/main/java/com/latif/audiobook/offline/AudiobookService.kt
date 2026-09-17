@@ -291,12 +291,17 @@ class AudiobookService : Service() {
         is SilmaModelException.AssetExtractionFailed -> "Model installation failed: ${error.assetPath}"
     }
 
+    /**
+     * Larger semantic sections amortize F5 reference and encoder overhead.
+     * BookParser still splits at sentence boundaries and hard-wraps only when
+     * a sentence exceeds the limit.
+     */
     private fun chunkSizeFor(steps: Int): Int = when {
-        steps <= 8 -> 140
-        steps <= 12 -> 160
-        steps <= 16 -> 180
-        steps <= 24 -> 200
-        else -> 220
+        steps <= 8 -> 360
+        steps <= 12 -> 440
+        steps <= 16 -> 500
+        steps <= 24 -> 560
+        else -> 600
     }
 
     private fun formatDuration(milliseconds: Long): String {
@@ -389,7 +394,8 @@ class AudiobookService : Service() {
         const val KEY_LAST_BACKEND = "lastBackend"
         const val KEY_LAST_NFE_STEPS = "lastNfeSteps"
         const val KEY_LAST_FIRST_SECTION_MS = "lastFirstSectionMs"
-        const val DEFAULT_NFE_STEPS = 32
+        // 24 steps retain strong F5 quality while reducing denoising work by 25%.
+        const val DEFAULT_NFE_STEPS = 24
         const val AUTHOR_SPEED = 0.90f
         const val NARRATOR_NAME = "LATIF Author Narrator"
         private const val CHANNEL_ID = "latif_audiobook_render"
