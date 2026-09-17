@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - latif-audiobook-v3-silma-offline
+      - voice-lab-silma-audiobook
   workflow_dispatch:
 
 permissions:
