@@ -19,6 +19,12 @@ The script does **not** apply fade-in, fade-out, normalization, compression, den
 
 The notebook installs the official package from SILMA AI and runs on a GPU when Colab provides one. It does not commit private audio, secrets, or generated books to GitHub.
 
+## Interactive AI interface in Colab
+
+For a graphical upload-and-generate experience, open `colab_voice_studio_launcher.ipynb` in Google Colab and run the cells. The Gradio interface provides one button for manuscript upload, authorized reference WAV, reference transcript, cover image, chapter JSON, book metadata, codec selection, and generation. It returns the master WAV, tagged M4A, and individual WAV clips.
+
+The interface uses the same `generate_audiobook.py` and `package_m4a.py` scripts, so it keeps the same pure-audio rule: no fade-in, fade-out, normalization, EQ, denoise, music, or crossfade.
+
 ## Local command
 
 ```bash
