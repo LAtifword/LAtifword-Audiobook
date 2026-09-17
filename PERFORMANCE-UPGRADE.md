@@ -8,6 +8,8 @@ Narration sections now target approximately **560 characters** instead of 140–
 
 The Arabic cleanup path now removes standalone `***` layout separators so they are not accidentally spoken. Existing Arabic letters, hamza forms, ta marbuta, alef maqsura, and diacritics remain untouched.
 
+The mobile hot paths were also tightened. WAV parsing now decodes little-endian PCM directly from the byte array instead of allocating a `ByteBuffer` per sample. Reference-audio resampling uses fixed-point linear interpolation rather than per-sample floating-point `floor` calculations. Android and desktop token encoders use reusable single-character lookup tables, and desktop Arabic normalization compiles its regular expressions once instead of once per chunk.
+
 ## Quality and output guarantees
 
 The renderer continues to use the local SILMA F5 pipeline, Gacrux-style mature female author narration configuration, Arabic `ar-001`, natural pauses, stable volume, and transactional M4A output. No fade-in, fade-out, background music, or post-processing was added.

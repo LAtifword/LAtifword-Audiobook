@@ -10,7 +10,7 @@
     "source_chars": 108563,
     "chunk_chars": 108020,
     "estimated_refinement_steps": 17408,
-    "split_runtime_ms": 12.554,
+    "split_runtime_ms": 6.272,
     "avg_chars_per_section": 198.6
   },
   "optimized": {
@@ -21,7 +21,7 @@
     "source_chars": 108563,
     "chunk_chars": 108363,
     "estimated_refinement_steps": 4824,
-    "split_runtime_ms": 13.102,
+    "split_runtime_ms": 6.146,
     "avg_chars_per_section": 539.1
   },
   "section_reduction_pct": 63.1,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import wave
 from dataclasses import dataclass
@@ -14,6 +15,10 @@ import onnxruntime as ort
 SAMPLE_RATE = 24_000
 MIN_STEPS = 8
 MAX_STEPS = 32
+_ARABIC_SPACES = re.compile(r"[ \t]+")
+_ARABIC_PUNCTUATION = re.compile(r" *([،؛:,.!?؟…]) *")
+_ARABIC_NEWLINES = re.compile(r"\s+")
+_ARABIC_LAYOUT_SEPARATOR = re.compile(r"(?m)^\s*\*{3,}\s*$")
 DEFAULT_REFERENCE_TEXT = (
     "ويدقق النظر في القرآن الكريم وسائر الكتب السماوية "
     "ويتبع مسالك الرسل العظام عليهم الصلاة والسلام."
@@ -28,12 +33,11 @@ def app_root() -> Path:
 
 
 def prepare_arabic_text(text: str) -> str:
-    import re
-
+    text = _ARABIC_LAYOUT_SEPARATOR.sub(" ", text)
     text = text.replace("\ufeff", " ").replace("\u00a0", " ").replace("ـ", " ")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r" *([،؛:,.!?؟…]) *", r"\1 ", text)
-    text = re.sub(r"\s+", " ", text)
+    text = _ARABIC_SPACES.sub(" ", text)
+    text = _ARABIC_PUNCTUATION.sub(r"\1 ", text)
+    text = _ARABIC_NEWLINES.sub(" ", text)
     return text.strip()
 
 
@@ -89,6 +93,8 @@ class SilmaDesktopEngine:
         self.transformer: ort.InferenceSession | None = None
         self.decoder: ort.InferenceSession | None = None
         self.vocab: dict[str, int] = {}
+        self._char_vocab = np.zeros(65536, dtype=np.int32)
+        self._char_present = np.zeros(65536, dtype=np.bool_)
 
     @property
     def sample_rate(self) -> int:
@@ -161,6 +167,12 @@ class SilmaDesktopEngine:
             line.rstrip("\r\n"): index
             for index, line in enumerate(vocab_path.read_text(encoding="utf-8").splitlines())
         }
+        for token, index in self.vocab.items():
+            if len(token) == 1:
+                code = ord(token)
+                if code < self._char_vocab.size:
+                    self._char_vocab[code] = index
+                    self._char_present[code] = True
         if not self.vocab:
             raise RuntimeError("SILMA vocabulary is empty")
 
@@ -209,7 +221,14 @@ class SilmaDesktopEngine:
         return VoiceReference(samples=samples, transcript=transcript.strip())
 
     def _encode(self, text: str) -> np.ndarray:
-        return np.asarray([self.vocab.get(ch, 0) for ch in text], dtype=np.int32)
+        ids = np.zeros(len(text), dtype=np.int32)
+        for index, ch in enumerate(text):
+            code = ord(ch)
+            if code < self._char_vocab.size and self._char_present[code]:
+                ids[index] = self._char_vocab[code]
+            else:
+                ids[index] = self.vocab.get(ch, 0)
+        return ids
 
     @staticmethod
     def _normalize_reference_text(text: str) -> str:
