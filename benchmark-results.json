@@ -1,0 +1,30 @@
+{
+  "source": "/home/ubuntu/upload/أنا_المنعزل_النسخة_النهائية_محمد_لطيف-1.txt",
+  "source_chars": 108563,
+  "source_words": 19690,
+  "old": {
+    "name": "old",
+    "chunk_target_chars": 220,
+    "nfe_steps": 32,
+    "sections": 544,
+    "source_chars": 108563,
+    "chunk_chars": 108020,
+    "estimated_refinement_steps": 17408,
+    "split_runtime_ms": 6.272,
+    "avg_chars_per_section": 198.6
+  },
+  "optimized": {
+    "name": "optimized",
+    "chunk_target_chars": 560,
+    "nfe_steps": 24,
+    "sections": 201,
+    "source_chars": 108563,
+    "chunk_chars": 108363,
+    "estimated_refinement_steps": 4824,
+    "split_runtime_ms": 6.146,
+    "avg_chars_per_section": 539.1
+  },
+  "section_reduction_pct": 63.1,
+  "estimated_refinement_work_reduction_pct": 72.3,
+  "relative_work_ratio": 0.277
+}

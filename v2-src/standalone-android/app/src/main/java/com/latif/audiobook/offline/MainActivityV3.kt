@@ -10,7 +10,6 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,25 +17,22 @@ import android.provider.OpenableColumns
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.*
-import java.util.Locale
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
 
-/** Native UI for LATIF Voice Studio v3.2 adaptive mobile renderer. */
+/** Native UI for the deterministic v3.3 Author Narrator pipeline. */
 class MainActivityV3 : Activity() {
     private var bookUri: Uri? = null
     private var bookName: String? = null
-    private var referenceUri: Uri? = null
-    private var referenceName: String? = null
-    private var mediaPlayer: MediaPlayer? = null
 
     private lateinit var titleInput: EditText
     private lateinit var textInput: EditText
     private lateinit var bookInfo: TextView
-    private lateinit var voiceInfo: TextView
-    private lateinit var referenceText: EditText
-    private lateinit var speedLabel: TextView
-    private lateinit var speedSeek: SeekBar
-    private lateinit var qualitySpinner: Spinner
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var preview: Button
@@ -46,19 +42,10 @@ class MainActivityV3 : Activity() {
     private lateinit var share: Button
 
     private val bg = Color.rgb(8, 10, 16)
-    private val panel = Color.rgb(18, 22, 34)
+    private val panelColor = Color.rgb(18, 22, 34)
     private val ivory = Color.rgb(244, 239, 226)
     private val muted = Color.rgb(150, 154, 170)
     private val saffron = Color.rgb(232, 184, 106)
-
-    private val modeLabels = listOf(
-        "Turbo · 8 خطوات — أسرع اختبار/كتاب",
-        "Balanced · 12 خطوة — الافتراضي",
-        "Studio · 16 خطوة — تفاصيل أكثر",
-        "High · 24 خطوة — بطيء",
-        "Max · 32 خطوة — المسار الكامل",
-    )
-    private val modeSteps = intArrayOf(8, 12, 16, 24, 32)
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -74,7 +61,12 @@ class MainActivityV3 : Activity() {
                 AudiobookService.ACTION_COMPLETE -> {
                     progress.visibility = View.VISIBLE
                     progress.progress = 100
-                    status.text = "اكتمل الملف الصوتي — Music/LATIF Audiobooks"
+                    val sidecar = intent.getStringExtra(AudiobookService.EXTRA_SIDECAR_URI)
+                    status.text = if (sidecar.isNullOrBlank()) {
+                        "اكتمل الملف الصوتي — Music/LATIF Audiobooks"
+                    } else {
+                        "اكتمل الصوت + ملف التنقل — Music/LATIF Audiobooks"
+                    }
                     preview.isEnabled = true
                     generate.isEnabled = true
                     cancel.visibility = View.GONE
@@ -97,7 +89,10 @@ class MainActivityV3 : Activity() {
         window.statusBarColor = bg
         window.navigationBarColor = bg
         if (Build.VERSION.SDK_INT >= 24) runCatching { window.setSustainedPerformanceMode(true) }
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 88)
         }
         setContentView(buildUi())
@@ -120,11 +115,6 @@ class MainActivityV3 : Activity() {
         super.onStop()
     }
 
-    override fun onDestroy() {
-        mediaPlayer?.release()
-        super.onDestroy()
-    }
-
     private fun buildUi(): View {
         val scroll = ScrollView(this).apply { setBackgroundColor(bg) }
         val root = LinearLayout(this).apply {
@@ -142,20 +132,23 @@ class MainActivityV3 : Activity() {
             gravity = Gravity.START
         })
         root.addView(TextView(this).apply {
-            text = "3.2 · ADAPTIVE SILMA F5 · XNNPACK / NNAPI FP16 / CPU"
+            text = "3.3 · AUTHOR NARRATOR · VERIFIED LOCAL SILMA PIPELINE"
             setTextColor(saffron)
-            textSize = 12.5f
+            textSize = 12f
             setPadding(0, dp(4), 0, dp(18))
         })
 
         root.addView(panel().apply {
-            addView(title("السرعة أصبحت خياراً حقيقياً"))
-            addView(body("بدلاً من إجبار الهاتف على 32 خطوة لكل مقطع، اختر 8 / 12 / 16 / 24 / 32. التطبيق يجرب XNNPACK ثم NNAPI FP16 ثم NNAPI ثم CPU، ويعرض ETA و RTF فعليين بعد بدء التوليد."))
+            addView(title("إعداد الراوي ثابت ومقصود"))
+            addView(body("LATIF Author Narrator · Literary · سرعة 0.90× · المسار الكامل 32 خطوة F5. لا توجد إعدادات وهمية أو استنساخ صوت مخفي في هذا الإصدار."))
+            addView(body("المحرك يجرب XNNPACK ثم NNAPI FP16 ثم NNAPI ثم ORT CPU، ويعرض الـ backend الفعلي و ETA / RTF أثناء العمل."))
             addView(body("الجهاز: ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}"))
         })
 
         root.addView(kicker("01 / الكتاب"))
-        root.addView(button("اختيار PDF · EPUB · DOCX · TXT", true).apply { setOnClickListener { chooseBook() } })
+        root.addView(button("اختيار PDF · EPUB · DOCX · TXT", true).apply {
+            setOnClickListener { chooseBook() }
+        })
         bookInfo = body("لم يتم اختيار كتاب. يمكنك لصق النص مباشرة.")
         root.addView(bookInfo)
         titleInput = field("عنوان الكتاب الصوتي", true)
@@ -168,76 +161,58 @@ class MainActivityV3 : Activity() {
         }
         root.addView(textInput, params(top = 10))
 
-        root.addView(kicker("02 / الصوت"))
+        root.addView(kicker("02 / خط الإنتاج"))
         root.addView(panel().apply {
-            addView(title("الراوي المدمج + استنساخ WAV"))
-            addView(body("الراوي العربي المدمج يعمل بلا إنترنت. ويمكنك اختيار WAV واضح مع النص المنطوق نفسه لاستنساخ صوت تملك الإذن باستخدامه."))
+            addView(title("Offline author-grade path"))
+            addView(body("SILMA F5 ONNX · 24 kHz · AAC-LC 128 kbps M4A · كتابة مؤقتة آمنة ثم نشر نهائي."))
+            addView(body("بعد كل مقطع، يحفظ التطبيق توقيت البداية والنهاية الحقيقيين وينشئ ملف .chapters.json للتنقل، بدون تقدير زمني من طول النص."))
+            addView(body("ملفات الموديل تتحقق من أحجامها قبل تشغيل ONNX، وأي backend يفشل يُغلق بالكامل قبل تجربة البديل."))
         })
-        root.addView(button("اختيار WAV لاستنساخ صوت آخر — اختياري", false).apply { setOnClickListener { chooseReference() } }, params(top = 10))
-        voiceInfo = body("حالياً: الراوي العربي المدمج")
-        root.addView(voiceInfo)
-        referenceText = field("إذا اخترت WAV: اكتب النص المنطوق في المرجع بدقة", false).apply {
-            minLines = 2
-            maxLines = 4
-            textDirection = View.TEXT_DIRECTION_RTL
-        }
-        root.addView(referenceText, params(top = 8))
 
-        root.addView(kicker("03 / الأداء"))
-        val pace = panel()
-        speedLabel = title("سرعة السرد  0.94×")
-        pace.addView(speedLabel)
-        speedSeek = SeekBar(this).apply {
-            max = 20
-            progress = 12
-            progressTintList = android.content.res.ColorStateList.valueOf(saffron)
-            thumbTintList = android.content.res.ColorStateList.valueOf(saffron)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                    speedLabel.text = String.format(Locale.US, "سرعة السرد  %.2f×", speedValue())
-                }
-                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
-            })
+        root.addView(kicker("03 / الاختبار ثم التوليد"))
+        preview = button("اختبار مقطع واحد أولاً", false).apply {
+            setOnClickListener { startGeneration(previewOnly = true) }
         }
-        pace.addView(speedSeek, params(top = 8))
-        pace.addView(title("وضع التوليد"), params(top = 10))
-        qualitySpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivityV3, android.R.layout.simple_spinner_dropdown_item, modeLabels)
-            setSelection(1)
-        }
-        pace.addView(qualitySpinner, params(top = 6))
-        pace.addView(body("ابدأ بـ Balanced 12. إذا أعجبك الصوت وما زال بطيئاً، جرّب Turbo 8. استخدم Max 32 فقط بعد اختبار مقطع، لأنه الأعلى تكلفة حسابية."))
-        root.addView(pace)
-
-        root.addView(kicker("04 / الاختبار ثم التوليد"))
-        preview = button("اختبار مقطع واحد أولاً", false).apply { setOnClickListener { startGeneration(previewOnly = true) } }
         root.addView(preview)
-        generate = button("إنشاء الكتاب الصوتي بالكامل", true).apply { setOnClickListener { startGeneration(previewOnly = false) } }
+        generate = button("إنشاء الكتاب الصوتي بالكامل", true).apply {
+            setOnClickListener { startGeneration(previewOnly = false) }
+        }
         root.addView(generate, params(top = 8))
         cancel = button("إلغاء", false).apply {
             visibility = View.GONE
-            setOnClickListener { startService(Intent(this@MainActivityV3, AudiobookService::class.java).setAction(AudiobookService.ACTION_CANCEL)) }
+            setOnClickListener {
+                startService(
+                    Intent(this@MainActivityV3, AudiobookService::class.java)
+                        .setAction(AudiobookService.ACTION_CANCEL),
+                )
+            }
         }
         root.addView(cancel, params(top = 8))
+
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             visibility = View.GONE
             progressTintList = android.content.res.ColorStateList.valueOf(saffron)
         }
         root.addView(progress, params(top = 12))
-        status = body("جاهز. اختبر مقطعاً واحداً قبل الكتاب الكامل. بعد أول مقطع كامل سيظهر معدل RTF ووقت الإنجاز المتوقع.")
+        status = body("جاهز. اختبر مقطعاً واحداً أولاً. أثناء التوليد سيظهر backend الفعلي، refinement، RTF ووقت الإنجاز المتوقع.")
         root.addView(status)
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        play = button("تشغيل آخر ملف", false).apply { visibility = View.GONE; setOnClickListener { playLast() } }
-        share = button("مشاركة", false).apply { visibility = View.GONE; setOnClickListener { shareLast() } }
+        play = button("فتح المشغل", false).apply {
+            visibility = View.GONE
+            setOnClickListener { openLastInPlayer() }
+        }
+        share = button("مشاركة", false).apply {
+            visibility = View.GONE
+            setOnClickListener { shareLast() }
+        }
         row.addView(play, LinearLayout.LayoutParams(0, dp(54), 1f))
         row.addView(share, LinearLayout.LayoutParams(0, dp(54), 1f).apply { marginStart = dp(8) })
         root.addView(row, params(top = 10))
 
         root.addView(TextView(this).apply {
-            text = "OFFLINE · SILMA F5 ONNX · ADAPTIVE 8–32 NFE · XNNPACK / NNAPI · ARM64 · v3.2"
+            text = "OFFLINE · SILMA F5 · AUTHOR 0.90x · 32 NFE · XNNPACK / NNAPI / CPU · MEDIA3 · v3.3"
             setTextColor(Color.rgb(90, 94, 110))
             textSize = 9.5f
             typeface = Typeface.MONOSPACE
@@ -249,48 +224,39 @@ class MainActivityV3 : Activity() {
     }
 
     private fun chooseBook() {
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
-                "application/pdf", "application/epub+zip",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "text/plain"
-            ))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }, PICK_BOOK)
-    }
-
-    private fun chooseReference() {
-        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "audio/wav"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("audio/wav", "audio/x-wav", "audio/wave"))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        }, PICK_REFERENCE)
+        startActivityForResult(
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf(
+                        "application/pdf",
+                        "application/epub+zip",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "text/plain",
+                    ),
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            },
+            PICK_BOOK,
+        )
     }
 
     @Deprecated("Deprecated Android callback retained for API 26 compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK || requestCode != PICK_BOOK) return
         val uri = data?.data ?: return
-        runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-        when (requestCode) {
-            PICK_BOOK -> {
-                bookUri = uri
-                bookName = queryName(uri)
-                val base = bookName?.substringBeforeLast('.').orEmpty()
-                if (titleInput.text.isBlank()) titleInput.setText(base)
-                bookInfo.text = "الكتاب: ${bookName ?: "ملف مختار"}"
-                status.text = "تم اختيار الكتاب. اختبر مقطعاً واحداً قبل التوليد الكامل."
-            }
-            PICK_REFERENCE -> {
-                referenceUri = uri
-                referenceName = queryName(uri)
-                voiceInfo.text = "صوت مستنسخ من: ${referenceName ?: "WAV"}"
-                Toast.makeText(this, "أدخل الآن النص المنطوق في ملف المرجع.", Toast.LENGTH_LONG).show()
-            }
+        runCatching {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+        bookUri = uri
+        bookName = queryName(uri)
+        val base = bookName?.substringBeforeLast('.').orEmpty()
+        if (titleInput.text.isBlank()) titleInput.setText(base)
+        bookInfo.text = "الكتاب: ${bookName ?: "ملف مختار"}"
+        status.text = "تم اختيار الكتاب. اختبر مقطعاً واحداً قبل التوليد الكامل."
     }
 
     private fun startGeneration(previewOnly: Boolean) {
@@ -299,77 +265,67 @@ class MainActivityV3 : Activity() {
             Toast.makeText(this, "اختر كتاباً أو الصق نصاً أولاً.", Toast.LENGTH_SHORT).show()
             return
         }
-        if (referenceUri != null && referenceText.text.toString().trim().length < 5) {
-            Toast.makeText(this, "اكتب النص المنطوق في مرجع الصوت بدقة.", Toast.LENGTH_LONG).show()
-            return
-        }
 
         val bookTitle = titleInput.text.toString().trim().ifBlank {
             bookName?.substringBeforeLast('.') ?: "LATIF Audiobook"
         }
-        val steps = selectedNfeSteps()
         val work = Intent(this, AudiobookService::class.java).apply {
             bookUri?.let { putExtra(AudiobookService.EXTRA_URI, it.toString()) }
                 ?: putExtra(AudiobookService.EXTRA_RAW_TEXT, pasted)
             putExtra(AudiobookService.EXTRA_TITLE, bookTitle)
             putExtra(AudiobookService.EXTRA_DISPLAY_NAME, bookName)
-            putExtra(AudiobookService.EXTRA_SPEED, speedValue())
-            putExtra(AudiobookService.EXTRA_PROFILE, NarrationProfile.LITERARY.ordinal)
             putExtra(AudiobookService.EXTRA_PREVIEW_ONLY, previewOnly)
-            putExtra(AudiobookService.EXTRA_NFE_STEPS, steps)
-            referenceUri?.let { putExtra(AudiobookService.EXTRA_REFERENCE_URI, it.toString()) }
-            putExtra(AudiobookService.EXTRA_REFERENCE_TEXT, referenceText.text.toString().trim())
         }
         progress.visibility = View.VISIBLE
         progress.progress = 0
-        status.text = if (previewOnly) "بدء اختبار $steps خطوات…" else "بدء الكتاب بوضع $steps خطوات…"
+        status.text = if (previewOnly) {
+            "بدء اختبار Author Narrator · 0.90× · 32 خطوة…"
+        } else {
+            "بدء الكتاب الكامل · Author Narrator · 0.90× · 32 خطوة…"
+        }
         preview.isEnabled = false
         generate.isEnabled = false
         cancel.visibility = View.VISIBLE
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(work) else startService(work)
     }
 
-    private fun selectedNfeSteps(): Int = modeSteps[qualitySpinner.selectedItemPosition.coerceIn(0, modeSteps.lastIndex)]
-    private fun speedValue(): Float = 0.82f + speedSeek.progress / 100f
-
     private fun restoreLastOutput() {
-        val prefs = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE)
-        val raw = prefs.getString(AudiobookService.KEY_LAST_OUTPUT, null)
-        val lastSteps = prefs.getInt(AudiobookService.KEY_LAST_NFE_STEPS, AudiobookService.DEFAULT_NFE_STEPS)
-        val index = modeSteps.indexOf(lastSteps)
-        if (index >= 0) qualitySpinner.setSelection(index)
+        val raw = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE)
+            .getString(AudiobookService.KEY_LAST_OUTPUT, null)
         if (!raw.isNullOrBlank()) {
             play.visibility = View.VISIBLE
             share.visibility = View.VISIBLE
         }
     }
 
-    private fun playLast() {
-        val raw = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE)
-            .getString(AudiobookService.KEY_LAST_OUTPUT, null) ?: return
-        runCatching {
-            mediaPlayer?.release()
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(this@MainActivityV3, Uri.parse(raw))
-                prepare()
-                start()
-            }
-        }.onFailure { Toast.makeText(this, "تعذر تشغيل الملف.", Toast.LENGTH_SHORT).show() }
+    private fun openLastInPlayer() {
+        val prefs = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE)
+        val audio = prefs.getString(AudiobookService.KEY_LAST_OUTPUT, null) ?: return
+        val sidecar = prefs.getString(AudiobookService.KEY_LAST_SIDECAR, null)
+        startActivity(Intent(this, AudiobookPlayerActivity::class.java).apply {
+            putExtra(AudiobookPlayerActivity.EXTRA_AUDIO_URI, audio)
+            sidecar?.let { putExtra(AudiobookPlayerActivity.EXTRA_SIDECAR_URI, it) }
+        })
     }
 
     private fun shareLast() {
         val raw = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE)
             .getString(AudiobookService.KEY_LAST_OUTPUT, null) ?: return
-        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-            type = "audio/mp4"
-            putExtra(Intent.EXTRA_STREAM, Uri.parse(raw))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }, "مشاركة الكتاب الصوتي"))
+        startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "audio/mp4"
+                    putExtra(Intent.EXTRA_STREAM, Uri.parse(raw))
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                },
+                "مشاركة الكتاب الصوتي",
+            ),
+        )
     }
 
     private fun queryName(uri: Uri): String? {
-        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-            if (c.moveToFirst()) return c.getString(0)
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) return cursor.getString(0)
         }
         return uri.lastPathSegment
     }
@@ -378,7 +334,7 @@ class MainActivityV3 : Activity() {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(16), dp(16), dp(16), dp(16))
         background = GradientDrawable().apply {
-            setColor(panel)
+            setColor(panelColor)
             cornerRadius = dp(16).toFloat()
             setStroke(dp(1), Color.rgb(48, 54, 69))
         }
@@ -436,13 +392,12 @@ class MainActivityV3 : Activity() {
 
     private fun params(top: Int = 0) = LinearLayout.LayoutParams(
         ViewGroup.LayoutParams.MATCH_PARENT,
-        ViewGroup.LayoutParams.WRAP_CONTENT
+        ViewGroup.LayoutParams.WRAP_CONTENT,
     ).apply { topMargin = dp(top) }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
         private const val PICK_BOOK = 501
-        private const val PICK_REFERENCE = 502
     }
 }

@@ -93,7 +93,7 @@ object BookParser {
             .trim()
     }
 
-    fun splitForNarration(text: String, maxChars: Int = 245): List<String> {
+    fun splitForNarration(text: String, maxChars: Int = 560): List<String> {
         val normalized = cleanText(text)
         if (normalized.isBlank()) return emptyList()
 
