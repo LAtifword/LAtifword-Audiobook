@@ -382,6 +382,9 @@ class AudiobookService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_DISPLAY_NAME = "displayName"
         const val EXTRA_PREVIEW_ONLY = "previewOnly"
+        // Kept for compatibility with the legacy MainActivity launcher.
+        const val EXTRA_PROFILE = "profile"
+        const val EXTRA_SPEED = "speed"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_OUTPUT_URI = "outputUri"
