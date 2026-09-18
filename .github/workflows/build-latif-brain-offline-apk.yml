@@ -36,13 +36,12 @@ jobs:
         with:
           gradle-version: "8.10.2"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Ensure Android SDK 35
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          SDKMANAGER="/usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Download and embed Arabic offline model
         shell: bash
