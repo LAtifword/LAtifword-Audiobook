@@ -72,8 +72,8 @@ class MainActivity : Activity() {
         textBox.setText(
             "مرحباً بك في LATIF Audio Studio. اكتب نصاً هنا أو استورد مخطوطاً، ثم أنشئ معاينة قصيرة قبل تحويل الكتاب كاملاً إلى صوت محلياً على جهازك."
         )
-        updateModelStatus()
         refreshManuscriptStats()
+        verifyRuntime()
     }
 
     private fun buildUi(): ScrollView {
@@ -546,11 +546,38 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun updateModelStatus() {
+    private fun verifyRuntime() {
+        previewButton.isEnabled = false
+        renderButton.isEnabled = false
+        previewPlayButton.isEnabled = false
+        fullPlayButton.isEnabled = false
+
         status.text = if (tts.isModelBundled()) {
-            "✓ Offline Arabic neural model ready. No Internet permission."
+            "Preparing offline Arabic engine… first launch may take a moment."
         } else {
-            "Offline model is missing from this build."
+            "Offline model package is incomplete."
+        }
+
+        if (!tts.isModelBundled()) return
+
+        executor.submit {
+            try {
+                tts.load()
+                val probe = tts.synthesize("مرحبا", 1.0f)
+                check(probe.isNotEmpty()) { "Native TTS self-test produced no audio." }
+
+                runOnUiThread {
+                    status.text = "✓ Offline engine verified. Arabic synthesis is ready."
+                    previewButton.isEnabled = true
+                    renderButton.isEnabled = true
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    status.text = "Engine startup failed: ${e.javaClass.simpleName}: ${e.message}"
+                    previewButton.isEnabled = false
+                    renderButton.isEnabled = false
+                }
+            }
         }
     }
 
