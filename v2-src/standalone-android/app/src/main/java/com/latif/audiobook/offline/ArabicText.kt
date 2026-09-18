@@ -10,6 +10,8 @@ object ArabicText {
      */
     fun prepareForNarration(input: String): String {
         return input
+            // Layout separators are not part of the spoken manuscript.
+            .replace(Regex("(?m)^\\s*\\*{3,}\\s*$"), " ")
             .replace('\uFEFF', ' ')
             .replace('\u00A0', ' ')
             .replace('ـ', ' ')

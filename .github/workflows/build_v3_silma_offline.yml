@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - latif-audiobook-v3-silma-offline
+      - voice-lab-silma-audiobook
   workflow_dispatch:
 
 permissions:
@@ -24,7 +25,8 @@ jobs:
           cp -a v2-src/standalone-android standalone-android
           mkdir -p release
           grep -q 'android:name=".MainActivityV3"' standalone-android/app/src/main/AndroidManifest.xml
-          grep -q 'versionName = "3.0.0"' standalone-android/app/build.gradle.kts
+          grep -q 'versionName = "3.2.0"' standalone-android/app/build.gradle.kts
+          grep -q 'versionCode = 9' standalone-android/app/build.gradle.kts
           grep -q 'SilmaF5Engine' standalone-android/app/src/main/java/com/latif/audiobook/offline/AudiobookService.kt
 
       - uses: actions/setup-java@v4
@@ -122,8 +124,8 @@ jobs:
           BT="$ANDROID_HOME/build-tools/35.0.0"
           "$BT/zipalign" -f -p 4 \
             standalone-android/app/build/outputs/apk/release/app-release-unsigned.apk \
-            release/LATIF-VOICE-STUDIO-v3.0.0-SILMA-F5-OFFLINE-ALIGNED.apk
-          "$BT/zipalign" -c -v 4 release/LATIF-VOICE-STUDIO-v3.0.0-SILMA-F5-OFFLINE-ALIGNED.apk >/dev/null
+            release/LATIF-VOICE-STUDIO-v3.2.0-SILMA-F5-OFFLINE-ALIGNED.apk
+          "$BT/zipalign" -c -v 4 release/LATIF-VOICE-STUDIO-v3.2.0-SILMA-F5-OFFLINE-ALIGNED.apk >/dev/null
 
       - name: Sign with permanent LATIF release identity
         env:
@@ -151,8 +153,8 @@ jobs:
           export LATIF_STORE_PASS="$STORE_PASS"
 
           BT="$ANDROID_HOME/build-tools/35.0.0"
-          INPUT=release/LATIF-VOICE-STUDIO-v3.0.0-SILMA-F5-OFFLINE-ALIGNED.apk
-          SIGNED=release/LATIF-VOICE-STUDIO-v3.0.0-SILMA-F5-OFFLINE-SIGNED.apk
+          INPUT=release/LATIF-VOICE-STUDIO-v3.2.0-SILMA-F5-OFFLINE-ALIGNED.apk
+          SIGNED=release/LATIF-VOICE-STUDIO-v3.2.0-SILMA-F5-OFFLINE-SIGNED.apk
           "$BT/apksigner" sign \
             --ks "$KEYSTORE" \
             --ks-key-alias latif-audiobook-release \
@@ -178,7 +180,7 @@ jobs:
         run: |
           set -euxo pipefail
           cat > release/MODEL-MANIFEST.txt <<'EOF'
-          LATIF VOICE STUDIO v3.0.0
+          LATIF VOICE STUDIO v3.2.0
           Runtime: Microsoft ONNX Runtime Android 1.28.0
           Primary TTS: SILMA TTS v1 / F5-TTS ONNX
           Model source: OpenVoiceOS/phoonnx-f5tts/silma-tts-v1
@@ -186,7 +188,7 @@ jobs:
           Built-in Arabic reference: silma-ai/silma-tts-v1-demo/ar.ref.24k.wav
           Output: 24 kHz source -> AAC-LC 128 kbps M4A
           Package: com.latif.audiobook.offline
-          Version: 3.0.0 (versionCode 7)
+          Version: 3.2.0 (versionCode 9)
           Architecture: arm64-v8a
           Network/API: none required at runtime
           Voice cloning: local WAV reference + exact transcript
@@ -195,9 +197,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: LATIF-VOICE-STUDIO-v3.0.0-SILMA-F5-OFFLINE-SIGNED
+          name: LATIF-VOICE-STUDIO-v3.2.0-SILMA-F5-OFFLINE-SIGNED
           path: |
-            release/LATIF-VOICE-STUDIO-v3.0.0-SILMA-F5-OFFLINE-SIGNED.apk
+            release/LATIF-VOICE-STUDIO-v3.2.0-SILMA-F5-OFFLINE-SIGNED.apk
             release/SIGNATURE-VERIFY.txt
             release/SHA256SUMS.txt
             release/MODEL-MANIFEST.txt
@@ -210,13 +212,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
-          APK=release/LATIF-VOICE-STUDIO-v3.0.0-SILMA-F5-OFFLINE-SIGNED.apk
+          APK=release/LATIF-VOICE-STUDIO-v3.2.0-SILMA-F5-OFFLINE-SIGNED.apk
           SIZE="$(stat -c%s "$APK")"
           if [ "$SIZE" -lt 2000000000 ]; then
-            TAG="latif-voice-studio-v3.0.0-silma-${GITHUB_RUN_NUMBER}"
+            TAG="latif-voice-studio-v3.2.0-silma-${GITHUB_RUN_NUMBER}"
             gh release create "$TAG" --repo LAtifword/LAtifword-Audiobook \
               --target "$GITHUB_SHA" \
-              --title 'LATIF Voice Studio 3.0 — SILMA F5 Offline' \
+              --title 'LATIF Voice Studio 3.2 — SILMA F5 Offline' \
               --notes 'Large fully-offline Android audiobook studio. SILMA TTS v1 / F5-TTS ONNX, local voice cloning from WAV + transcript, 24 kHz generation, AAC 128 kbps M4A, PDF/EPUB/DOCX/TXT. No API key, account, server, or post-install model download. ARM64 Android. Signed with the permanent LATIF release identity.' \
               "$APK" release/SIGNATURE-VERIFY.txt release/SHA256SUMS.txt release/MODEL-MANIFEST.txt release/SOURCE-COMMIT.txt
           else
