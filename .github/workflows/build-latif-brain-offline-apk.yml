@@ -1,0 +1,94 @@
+name: Build LATIF BRAIN Offline APK
+
+on:
+  push:
+    branches: [apk-build]
+    paths:
+      - "android_offline/**"
+      - ".github/workflows/build-latif-brain-offline-apk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Ensure Android SDK 35
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Download and embed Arabic offline model
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MODEL_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/nabra-82m-arabic-int8.tar.bz2"
+          curl -fL --retry 5 --retry-delay 3 "$MODEL_URL" -o /tmp/nabra.tar.bz2
+          rm -rf /tmp/nabra-unpack
+          mkdir -p /tmp/nabra-unpack android_offline/app/src/main/assets/models/nabra
+          tar -xjf /tmp/nabra.tar.bz2 -C /tmp/nabra-unpack
+          SRC="$(find /tmp/nabra-unpack -type f -name model.int8.onnx -printf '%h\n' | head -1)"
+          test -n "$SRC"
+          cp -a "$SRC"/. android_offline/app/src/main/assets/models/nabra/
+          test -s android_offline/app/src/main/assets/models/nabra/model.int8.onnx
+          test -s android_offline/app/src/main/assets/models/nabra/voices.bin
+          test -s android_offline/app/src/main/assets/models/nabra/tokens.txt
+          test -d android_offline/app/src/main/assets/models/nabra/espeak-ng-data
+          du -sh android_offline/app/src/main/assets/models/nabra
+
+      - name: Verify app is offline-only
+        run: |
+          ! grep -R 'android.permission.INTERNET' android_offline/app/src/main/AndroidManifest.xml
+
+      - name: Build installable APK
+        working-directory: android_offline
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Collect and verify APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          cp android_offline/app/build/outputs/apk/debug/app-debug.apk dist/LATIF-BRAIN-OFFLINE-arm64.apk
+          test -s dist/LATIF-BRAIN-OFFLINE-arm64.apk
+          sha256sum dist/LATIF-BRAIN-OFFLINE-arm64.apk | tee dist/SHA256.txt
+          ls -lh dist/LATIF-BRAIN-OFFLINE-arm64.apk
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-BRAIN-OFFLINE-APK
+          path: |
+            dist/LATIF-BRAIN-OFFLINE-arm64.apk
+            dist/SHA256.txt
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish APK release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TAG="latif-brain-offline-v0.2.0"
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes || true
+          git push origin ":refs/tags/$TAG" || true
+          gh release create "$TAG"             dist/LATIF-BRAIN-OFFLINE-arm64.apk             dist/SHA256.txt             --repo "$GITHUB_REPOSITORY"             --target "$GITHUB_SHA"             --title "LATIF BRAIN Offline v0.2.0"             --notes "Standalone arm64 Android APK. Arabic TTS inference runs locally on-device with the Nabra-82M INT8 model. The app manifest contains no INTERNET permission."
