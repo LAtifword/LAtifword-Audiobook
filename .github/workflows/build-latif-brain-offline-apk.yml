@@ -37,11 +37,20 @@ jobs:
           gradle-version: "8.10.2"
 
       - name: Ensure Android SDK 35
+        shell: bash
         run: |
-          SDKMANAGER="/usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager"
-          test -x "$SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+          set -euxo pipefail
+          SDKROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          echo "Android SDK root: $SDKROOT"
+          if [[ ! -f "$SDKROOT/platforms/android-35/android.jar" ]]; then
+            SDKMANAGER="$(find "$SDKROOT/cmdline-tools" -type f -name sdkmanager -perm -111 | sort -V | tail -1)"
+            test -n "$SDKMANAGER"
+            echo "Using sdkmanager: $SDKMANAGER"
+            yes | "$SDKMANAGER" --licenses >/dev/null || true
+            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+          fi
+          test -f "$SDKROOT/platforms/android-35/android.jar"
+          echo "sdk.dir=$SDKROOT" > android_offline/local.properties
 
       - name: Download and embed Arabic offline model
         shell: bash
