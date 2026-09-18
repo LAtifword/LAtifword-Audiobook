@@ -6,6 +6,11 @@ on:
     paths:
       - "android_offline/**"
       - ".github/workflows/build-latif-brain-offline-apk.yml"
+  pull_request:
+    branches: [mainLAtifword]
+    paths:
+      - "android_offline/**"
+      - ".github/workflows/build-latif-brain-offline-apk.yml"
   workflow_dispatch:
 
 permissions:
@@ -83,6 +88,7 @@ jobs:
           compression-level: 0
 
       - name: Publish APK release
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
