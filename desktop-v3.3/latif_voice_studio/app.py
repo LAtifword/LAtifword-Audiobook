@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 from latif_voice_studio.audio import ChapterTiming, M4aStreamWriter, safe_filename
 from latif_voice_studio.books import chunks_for_book, read_book
 from latif_voice_studio.engine import GenerationCancelled, SilmaDesktopEngine
+from latif_voice_studio.bridge import start_bridge
 
 
 APP_VERSION = "3.3.0"
@@ -452,12 +453,15 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    bridge = start_bridge()
     app = QApplication(sys.argv)
     app.setApplicationName("LATIF Voice Studio Desktop")
     app.setApplicationVersion(APP_VERSION)
     window = MainWindow()
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    bridge.shutdown()
+    return exit_code
 
 
 if __name__ == "__main__":
