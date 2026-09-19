@@ -452,12 +452,15 @@ class MainWindow(QMainWindow):
 
 
 def main() -> int:
+    bridge = start_bridge()
     app = QApplication(sys.argv)
     app.setApplicationName("LATIF Voice Studio Desktop")
     app.setApplicationVersion(APP_VERSION)
     window = MainWindow()
     window.show()
-    return app.exec()
+    exit_code = app.exec()
+    bridge.shutdown()
+    return exit_code
 
 
 if __name__ == "__main__":
