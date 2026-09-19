@@ -31,7 +31,8 @@ from PySide6.QtWidgets import (
 
 from latif_voice_studio.audio import ChapterTiming, M4aStreamWriter, safe_filename
 from latif_voice_studio.books import chunks_for_book, read_book
-from latif_voice_studio.engine import GenerationCancelled, SilmaDesktopEngine\nfrom latif_voice_studio.bridge import start_bridge
+from latif_voice_studio.engine import GenerationCancelled, SilmaDesktopEngine
+from latif_voice_studio.bridge import start_bridge
 
 
 APP_VERSION = "3.3.0"
