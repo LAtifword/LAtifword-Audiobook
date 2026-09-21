@@ -4,9 +4,6 @@ import android.content.Context
 import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import kotlin.math.floor
 
 /** Minimal WAV PCM16 reader/resampler used by the fully-offline F5 voice-cloning engine. */
 object WavPcm {
@@ -84,23 +81,33 @@ object WavPcm {
         if (input.isEmpty() || fromRate == toRate) return input
         val outLength = ((input.size.toLong() * toRate) / fromRate).toInt().coerceAtLeast(1)
         val out = ShortArray(outLength)
-        val scale = fromRate.toDouble() / toRate.toDouble()
+        // Q32 fixed-point interpolation avoids per-sample Double/floor work and
+        // temporary objects on mid-range Android CPUs.
+        val fractionBits = 32
+        val fractionOne = 1L shl fractionBits
+        val fractionMask = fractionOne - 1L
+        val step = (fromRate.toLong() shl fractionBits) / toRate.toLong()
+        var position = 0L
         for (i in out.indices) {
-            val pos = i * scale
-            val left = floor(pos).toInt().coerceIn(0, input.lastIndex)
+            val left = (position ushr fractionBits).toInt().coerceIn(0, input.lastIndex)
             val right = (left + 1).coerceAtMost(input.lastIndex)
-            val t = pos - left
-            val value = input[left] * (1.0 - t) + input[right] * t
-            out[i] = value.toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            val fraction = position and fractionMask
+            val value = (input[left].toLong() * (fractionOne - fraction) +
+                input[right].toLong() * fraction) shr fractionBits
+            out[i] = value.coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toShort()
+            position += step
         }
         return out
     }
 
     private fun leShort(data: ByteArray, offset: Int): Short =
-        ByteBuffer.wrap(data, offset, 2).order(ByteOrder.LITTLE_ENDIAN).short
+        ((data[offset].toInt() and 0xff) or (data[offset + 1].toInt() shl 8)).toShort()
 
     private fun leInt(data: ByteArray, offset: Int): Int =
-        ByteBuffer.wrap(data, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        (data[offset].toInt() and 0xff) or
+            ((data[offset + 1].toInt() and 0xff) shl 8) or
+            ((data[offset + 2].toInt() and 0xff) shl 16) or
+            (data[offset + 3].toInt() shl 24)
 
     private fun InputStream.readAllBytesCompat(): ByteArray {
         val out = ByteArrayOutputStream()

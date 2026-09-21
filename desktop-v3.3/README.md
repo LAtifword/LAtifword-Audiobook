@@ -1,62 +1,81 @@
-LATIF VOICE STUDIO DESKTOP 3.3
-================================
+# LATIF Voice Studio 3.3 Desktop
 
-Windows x64 desktop companion to LATIF Voice Studio Android.
+A fully local Windows x64 companion to LATIF Voice Studio Android.
 
-WHAT THIS BUILD DOES
---------------------
-- Fully offline SILMA TTS v1 / F5-TTS ONNX narration.
-- Uses DirectML on a compatible Windows GPU and falls back to ONNX Runtime CPU.
-- No API key, cloud account, server, Python installation, or runtime model download.
-- Opens PDF, EPUB, DOCX and TXT manuscripts, or pasted text.
-- Default LATIF Author Narrator reference, 0.90x speed, Studio 32-step F5 quality.
-- Optional 24/16/8-step modes for faster office previews and production.
-- Optional custom PCM WAV reference voice with its exact transcript.
-- One-section preview before committing to a full book.
-- Streams generated PCM directly into AAC-LC M4A instead of retaining the whole book in RAM.
-- Shows active backend, F5 refinement progress, RTF and estimated time remaining.
-- Writes a matching .chapters.json sidecar based on detected chapter headings.
+## What 3.3 does
 
-RUNNING
--------
-1. Extract the complete portable ZIP to a normal folder. Do not run the EXE from inside the ZIP.
-2. Open LATIF-Voice-Studio-3.3.exe.
-3. Choose a book or paste text.
-4. Keep Backend on "Auto · DirectML GPU → CPU" for the first run.
-5. Use "Render one-section preview" first.
-6. If the voice and speed are correct, choose "Generate full audiobook".
+- Runs the same SILMA TTS v1 / F5-TTS ONNX pipeline used by the Android app.
+- Bundles the same Arabic Author Narrator reference voice and transcript.
+- Uses fixed Literary pacing at **0.90x** by default.
+- Offers 8 / 12 / 16 / 24 / 32 F5 refinement presets; 32 is the Studio setting matching the 3.2.1 quality target.
+- Tries **DirectML GPU** first on Windows, then falls back to tuned ONNX Runtime CPU.
+- Accepts PDF, DOCX, EPUB, and TXT.
+- Supports a one-section preview before committing to a whole book.
+- Writes 24 kHz mono AAC-LC M4A at 128 kbps.
+- Writes a `.chapters.json` sidecar with real generated timing.
+- Caches completed sections on disk, so interrupted jobs can resume instead of starting over.
+- Shows live backend, section/refinement progress, ETA, and measured RTF.
+- Can optionally use a WAV reference voice with its exact transcript.
 
-OUTPUT
-------
-Finished audio is written to:
+## Privacy
 
-  %USERPROFILE%\Music\LATIF Audiobooks\
+Narration is local. The desktop application does not require an API key, account, server, or cloud inference.
 
-Each completed audiobook produces:
-- <title>.m4a
-- <title>.chapters.json
+## Windows package
 
-GPU NOTES
----------
-DirectML works through DirectX 12 and supports a broad range of modern NVIDIA, AMD and Intel GPUs. The app uses GPU adapter ID 0 by default. On a multi-GPU office laptop, adapter 0 may be the integrated GPU; the adapter ID control lets you try another installed adapter without changing the application.
+The GitHub workflow builds a portable folder and ZIP. Unzip it and run:
 
-The DirectML provider requires sequential ONNX execution and memory-pattern optimization disabled. LATIF Voice Studio configures those settings automatically. If DirectML cannot initialize all SILMA sessions, Auto mode falls back to CPU and reports the active backend in the UI.
+`LATIF Voice Studio 3.3 Desktop.exe`
 
-QUALITY MODES
--------------
-Studio:   32 F5 steps — default, maximum exported trajectory
-High:     24 F5 steps
-Balanced: 16 F5 steps
-Fast:      8 F5 steps — recommended for quick preview only
+The SILMA model is bundled in the package; there is no post-install model download.
 
-The lower modes intentionally decode an earlier F5 refinement state. They are speed/quality choices, not different narrator models.
+### Windows SmartScreen
 
-CUSTOM VOICE
-------------
-The optional custom reference must be a PCM WAV file and should be at least 2 seconds long. Enter the exact words spoken in that WAV. The app trims references longer than 15 seconds. Use only recordings you have permission to use.
+The first portable build is not Authenticode-signed because this repository does not contain a Windows code-signing certificate. Windows may show a SmartScreen warning for a new unsigned executable. This is separate from the Android signing identity.
 
-PORTABLE BUILD
---------------
-This release is packaged with PyInstaller as a Windows one-folder application. Keep the folder together because the EXE depends on the bundled runtime, DirectML/ONNX Runtime libraries, FFmpeg/PyAV libraries and the embedded SILMA model directory.
+## Backend strategy
 
-Windows Authenticode signing is separate from the Android JKS certificate. This portable desktop build is not Authenticode-signed unless a Windows code-signing certificate is added to the release pipeline later.
+The packaged Windows build uses `onnxruntime-directml`. DirectML works on DirectX 12-capable NVIDIA, AMD, and Intel GPUs and allows CPU fallback for unsupported graph partitions. If the DirectML sessions cannot initialize, the app retries all three SILMA sessions on the CPU.
+
+The application intentionally initializes preprocess, transformer, and decoder with one session configuration before declaring the backend ready.
+
+## Source layout
+
+- `latif_voice_studio/engine.py` — SILMA ONNX runtime
+- `latif_voice_studio/book_parser.py` — PDF/DOCX/EPUB/TXT parsing + semantic chunking
+- `latif_voice_studio/renderer.py` — cache/resume, F5 loop, M4A, sidecar, ETA/RTF
+- `latif_voice_studio/main.py` — PySide6 desktop UI
+- `LATIFVoiceStudioDesktop.spec` — PyInstaller portable build
+- `tests/` — core regression tests
+
+## Local developer run
+
+Requires Python 3.12 x64.
+
+```powershell
+cd desktop-v3.3
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-win.txt
+```
+
+Place these exact assets under `assets/silma-f5/`:
+
+- F5_Preprocess.onnx
+- model.onnx
+- F5_Decode.onnx
+- config.json
+- default_ref.wav
+- vocab.txt
+
+Then:
+
+```powershell
+python run_desktop.py
+```
+
+## Important performance note
+
+Desktop hardware should have much more thermal and compute headroom than the phone, but the 32-step F5 trajectory is still sequential: each refinement step depends on the previous one. GPU acceleration reduces the cost of each step; it does not turn the 31 transformer iterations into 31 independent parallel jobs.
+
+Use **Test first section** to measure the machine before starting a full audiobook.

@@ -1,0 +1,191 @@
+name: Build LATIF Voice Studio v3.3 Desktop
+
+on:
+  push:
+    branches:
+      - latif-voice-studio-v3.3-desktop
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12 x64
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+          cache: 'pip'
+          cache-dependency-path: desktop-v3.3/requirements-win.txt
+
+      - name: Install desktop dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m pip install --upgrade pip
+          python -m pip install -r desktop-v3.3/requirements-win.txt
+          python -m pip install "onnx>=1.17,<2"
+          python -c "import onnxruntime as ort; print('ONNX Runtime', ort.__version__); print('Providers', ort.get_available_providers())"
+
+      - name: Download and verify SILMA Author Narrator assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $assets = "desktop-v3.3/assets/silma-f5"
+          New-Item -ItemType Directory -Force -Path $assets | Out-Null
+          $base = "https://huggingface.co/OpenVoiceOS/phoonnx-f5tts/resolve/main/silma-tts-v1"
+
+          curl.exe -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$assets/model.onnx" "$base/model.onnx?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$assets/F5_Preprocess.onnx" "$base/F5_Preprocess.onnx?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$assets/F5_Decode.onnx" "$base/F5_Decode.onnx?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$assets/vocab.txt" "$base/vocab.txt?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$assets/config.json" "$base/config.json?download=true"
+          curl.exe -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$assets/default_ref.wav" "https://huggingface.co/spaces/silma-ai/silma-tts-v1-demo/resolve/main/ar.ref.24k.wav?download=true"
+
+          $expected = @{
+            "F5_Preprocess.onnx" = 73904440
+            "model.onnx" = 612437669
+            "F5_Decode.onnx" = 62546929
+            "config.json" = 156367
+            "default_ref.wav" = 372680
+            "vocab.txt" = 36357
+          }
+          foreach ($name in $expected.Keys) {
+            $actual = (Get-Item "$assets/$name").Length
+            if ($actual -ne $expected[$name]) {
+              throw "$name size mismatch: $actual expected $($expected[$name])"
+            }
+            Write-Host "$name OK $actual bytes"
+          }
+
+      - name: Verify ONNX graph interfaces
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import onnx
+          from pathlib import Path
+
+          root = Path("desktop-v3.3/assets/silma-f5")
+          expected = {
+              "F5_Preprocess.onnx": (
+                  {"audio","text_ids","max_duration"},
+                  {"noise","rope_cos_q","rope_sin_q","rope_cos_k","rope_sin_k",
+                   "cat_mel_text","cat_mel_text_drop","ref_signal_len"},
+              ),
+              "model.onnx": (
+                  {"noise","rope_cos_q","rope_sin_q","rope_cos_k","rope_sin_k",
+                   "cat_mel_text","cat_mel_text_drop","time_step.1"},
+                  {"denoised","time_step"},
+              ),
+              "F5_Decode.onnx": (
+                  {"denoised","ref_signal_len"},
+                  {"output_audio"},
+              ),
+          }
+
+          for name, (required_inputs, required_outputs) in expected.items():
+              model = onnx.load(str(root / name), load_external_data=False)
+              inputs = {x.name for x in model.graph.input}
+              outputs = {x.name for x in model.graph.output}
+              assert required_inputs <= inputs, (name, "inputs", required_inputs - inputs)
+              assert required_outputs <= outputs, (name, "outputs", required_outputs - outputs)
+              print(name, "opset", [(x.domain, x.version) for x in model.opset_import], "OK")
+          '@ | python -
+
+      - name: Run desktop unit tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PYTHONPATH = (Resolve-Path "desktop-v3.3").Path
+          python -m unittest discover -s desktop-v3.3/tests -v
+
+      - name: Build portable Windows application
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pyinstaller --clean --noconfirm desktop-v3.3/LATIFVoiceStudioDesktop.spec
+
+          $dist = "dist/LATIF Voice Studio 3.3 Desktop"
+          $exe = "$dist/LATIF Voice Studio 3.3 Desktop.exe"
+          if (-not (Test-Path $exe)) { throw "Desktop executable missing" }
+
+          $assetRoot = Get-ChildItem -Path $dist -Recurse -Directory | Where-Object { $_.FullName -match "assets[\\/]silma-f5$" } | Select-Object -First 1
+          if (-not $assetRoot) { throw "Packaged SILMA asset directory missing" }
+
+          foreach ($name in @("F5_Preprocess.onnx","model.onnx","F5_Decode.onnx","config.json","default_ref.wav","vocab.txt")) {
+            if (-not (Test-Path (Join-Path $assetRoot.FullName $name))) { throw "Packaged asset missing: $name" }
+          }
+
+          $ortDll = Get-ChildItem -Path $dist -Recurse -File | Where-Object { $_.Name -match "onnxruntime.*\.dll$" } | Select-Object -First 1
+          if (-not $ortDll) { throw "ONNX Runtime DLL missing from portable build" }
+
+          $ffmpeg = Get-ChildItem -Path $dist -Recurse -File | Where-Object { $_.Name -match "ffmpeg.*\.exe$" } | Select-Object -First 1
+          if (-not $ffmpeg) { throw "Bundled FFmpeg executable missing" }
+
+          Write-Host "EXE bytes" (Get-Item $exe).Length
+          Write-Host "ORT" $ortDll.FullName
+          Write-Host "FFmpeg" $ffmpeg.FullName
+          Write-Host "Assets" $assetRoot.FullName
+
+      - name: Build portable ZIP and manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+
+          @"
+          LATIF VOICE STUDIO 3.3 DESKTOP
+          Platform: Windows x64
+          Runtime: Python 3.12 + PySide6 + ONNX Runtime DirectML 1.24.4
+          TTS: SILMA TTS v1 / F5-TTS ONNX
+          Default narrator: bundled LATIF Author Narrator reference
+          Default speed: 0.90x
+          Studio trajectory: 32 F5 steps
+          Presets: 8 / 12 / 16 / 24 / 32
+          Backend: DirectML GPU -> tuned ORT CPU
+          Input: PDF / DOCX / EPUB / TXT
+          Output: 24 kHz mono AAC-LC 128 kbps M4A + chapters JSON
+          Resume: per-section disk cache
+          API/account/server: none
+          Windows Authenticode signature: not included
+          "@ | Set-Content -Encoding UTF8 release/MODEL-MANIFEST.txt
+
+          git rev-parse HEAD | Set-Content -Encoding ascii release/SOURCE-COMMIT.txt
+
+          $zip = "release/LATIF-VOICE-STUDIO-v3.3.0-DESKTOP-WINDOWS-x64-PORTABLE.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          7z a -tzip -mx=0 $zip ".\dist\LATIF Voice Studio 3.3 Desktop\*" | Out-Host
+          if (-not (Test-Path $zip)) { throw "Portable ZIP missing" }
+
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLower()
+          "$hash  LATIF-VOICE-STUDIO-v3.3.0-DESKTOP-WINDOWS-x64-PORTABLE.zip" | Set-Content -Encoding ascii release/SHA256SUMS.txt
+          Write-Host "ZIP SHA256 $hash"
+          Write-Host "ZIP bytes" (Get-Item $zip).Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-VOICE-STUDIO-v3.3.0-DESKTOP-WINDOWS-x64
+          path: |
+            release/LATIF-VOICE-STUDIO-v3.3.0-DESKTOP-WINDOWS-x64-PORTABLE.zip
+            release/SHA256SUMS.txt
+            release/MODEL-MANIFEST.txt
+            release/SOURCE-COMMIT.txt
+          retention-days: 30
+          compression-level: 0
+
+      - name: Publish desktop release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "latif-voice-studio-v3.3-desktop-${{ github.run_number }}"
+          gh release create $tag --repo LAtifword/LAtifword-Audiobook --target "${{ github.sha }}" --title "LATIF Voice Studio 3.3 Desktop — Windows x64" --notes "Offline Windows companion build. Bundles SILMA F5 Author Narrator, DirectML GPU acceleration with CPU fallback, resumable section rendering, preview mode, ETA/RTF, PDF/DOCX/EPUB/TXT input, and M4A output. No API/account/server. Portable build is not Authenticode-signed." release/LATIF-VOICE-STUDIO-v3.3.0-DESKTOP-WINDOWS-x64-PORTABLE.zip release/SHA256SUMS.txt release/MODEL-MANIFEST.txt release/SOURCE-COMMIT.txt
