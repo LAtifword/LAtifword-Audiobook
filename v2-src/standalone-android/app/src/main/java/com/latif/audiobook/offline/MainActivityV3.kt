@@ -510,5 +510,6 @@ class MainActivityV3 : Activity() {
 
     companion object {
         private const val PICK_BOOK = 501
+        private const val PICK_REFERENCE = 502
     }
 }
