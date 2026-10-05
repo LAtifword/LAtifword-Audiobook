@@ -59,13 +59,15 @@ class AudiobookService : Service() {
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "LATIF Audiobook" }
         val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME)
         val previewOnly = intent.getBooleanExtra(EXTRA_PREVIEW_ONLY, false)
+        val referenceUri = intent.getStringExtra(EXTRA_REFERENCE_URI)?.let(Uri::parse)
+        val referenceText = intent.getStringExtra(EXTRA_REFERENCE_TEXT).orEmpty()
 
         running = true
         cancelled.set(false)
         startForeground(NOTIFICATION_ID, notification("Preparing SILMA Author Narrator…", 0, true))
         renderJob = serviceScope.launch {
             runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
-            runJob(uri, rawText, title, displayName, previewOnly)
+            runJob(uri, rawText, title, displayName, previewOnly, referenceUri, referenceText)
         }
         return START_NOT_STICKY
     }
@@ -76,6 +78,8 @@ class AudiobookService : Service() {
         title: String,
         displayName: String?,
         previewOnly: Boolean,
+        referenceUri: Uri?,
+        referenceText: String,
     ) {
         val profile = NarrationProfile.LITERARY
         val speed = AUTHOR_SPEED
@@ -118,8 +122,14 @@ class AudiobookService : Service() {
                 }
             }
 
-            sendProgress(4, "Loading fixed voice · ${VoiceReferenceConfig.ID}…")
-            val reference = engine.builtInReference()
+            val reference = if (referenceUri != null) {
+                require(referenceText.isNotBlank()) { "Custom reference transcript is required." }
+                sendProgress(4, "Loading custom reference voice…")
+                engine.referenceFromUri(referenceUri, referenceText)
+            } else {
+                sendProgress(4, "Loading fixed voice · ${VoiceReferenceConfig.ID}…")
+                engine.builtInReference()
+            }
 
             val outputTitle = if (previewOnly) "$title — Author Narrator preview" else title
             val metadata = AudiobookMetadata(
@@ -382,6 +392,8 @@ class AudiobookService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_DISPLAY_NAME = "displayName"
         const val EXTRA_PREVIEW_ONLY = "previewOnly"
+        const val EXTRA_REFERENCE_URI = "referenceUri"
+        const val EXTRA_REFERENCE_TEXT = "referenceText"
         // Kept for compatibility with the legacy MainActivity launcher.
         const val EXTRA_PROFILE = "profile"
         const val EXTRA_SPEED = "speed"

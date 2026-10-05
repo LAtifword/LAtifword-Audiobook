@@ -30,6 +30,8 @@ import android.widget.Toast
 class MainActivityV3 : Activity() {
     private var bookUri: Uri? = null
     private var bookName: String? = null
+    private var referenceUri: Uri? = null
+    private var referenceName: String? = null
 
     private lateinit var titleInput: EditText
     private lateinit var textInput: EditText
@@ -45,6 +47,8 @@ class MainActivityV3 : Activity() {
     private lateinit var devLog: TextView
     private lateinit var modelLine: TextView
     private lateinit var chunkLine: TextView
+    private lateinit var referenceInfo: TextView
+    private lateinit var referenceTranscript: EditText
 
     private val bg = Color.rgb(8, 10, 16)
     private val panelColor = Color.rgb(18, 22, 34)
@@ -202,7 +206,32 @@ class MainActivityV3 : Activity() {
         }
         root.addView(textInput, params(top = 10))
 
-        root.addView(kicker("02 / خط الإنتاج"))
+        root.addView(kicker("02 / الصوت المرجعي"))
+        root.addView(panel().apply {
+            addView(title("مرجع الصوت للـ voice conditioning"))
+            addView(body("استخدم المرجع المضمّن، أو اختر WAV نظيفاً بصوت تملك حق استخدامه مع النص الحرفي المنطوق. يفضّل 3–15 ثانية، صوت واحد، دون موسيقى أو صدى."))
+            addView(button("استخدام المرجع المضمّن", false).apply {
+                setOnClickListener {
+                    referenceUri = null
+                    referenceName = null
+                    referenceInfo.text = "المرجع: SILMA Nabra-82M · ${VoiceReferenceConfig.SPEAKER} · مضمّن"
+                }
+            })
+            addView(button("اختيار WAV لمرجع صوتي مخصص", false).apply {
+                setOnClickListener { chooseReference() }
+            }, params(top = 8))
+            referenceInfo = body("المرجع: SILMA Nabra-82M · ${VoiceReferenceConfig.SPEAKER} · مضمّن")
+            addView(referenceInfo)
+            referenceTranscript = field("النص الحرفي للمرجع الصوتي", false).apply {
+                minLines = 2
+                maxLines = 5
+                gravity = Gravity.TOP or Gravity.START
+                textDirection = View.TEXT_DIRECTION_RTL
+            }
+            addView(referenceTranscript, params(top = 8))
+        })
+
+        root.addView(kicker("03 / خط الإنتاج"))
         root.addView(panel().apply {
             addView(title("Offline author-grade path"))
             addView(body("SILMA F5 ONNX · 24 kHz · AAC-LC 128 kbps M4A · كتابة مؤقتة آمنة ثم نشر نهائي."))
@@ -210,7 +239,7 @@ class MainActivityV3 : Activity() {
             addView(body("ملفات الموديل تتحقق من أحجامها قبل تشغيل ONNX، وأي backend يفشل يُغلق بالكامل قبل تجربة البديل."))
         })
 
-        root.addView(kicker("03 / الاختبار ثم التوليد"))
+        root.addView(kicker("04 / الاختبار ثم التوليد"))
         preview = button("اختبار مقطع واحد أولاً", false).apply {
             setOnClickListener { startGeneration(previewOnly = true) }
         }
@@ -284,20 +313,39 @@ class MainActivityV3 : Activity() {
         )
     }
 
+    private fun chooseReference() {
+        startActivityForResult(
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "audio/wav"
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("audio/wav", "audio/x-wav", "audio/*"))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            },
+            PICK_REFERENCE,
+        )
+    }
+
     @Deprecated("Deprecated Android callback retained for API 26 compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK || requestCode != PICK_BOOK) return
+        if (resultCode != RESULT_OK || (requestCode != PICK_BOOK && requestCode != PICK_REFERENCE)) return
         val uri = data?.data ?: return
         runCatching {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        bookUri = uri
-        bookName = queryName(uri)
-        val base = bookName?.substringBeforeLast('.').orEmpty()
-        if (titleInput.text.isBlank()) titleInput.setText(base)
-        bookInfo.text = "الكتاب: ${bookName ?: "ملف مختار"}"
-        status.text = "تم اختيار الكتاب. اختبر مقطعاً واحداً قبل التوليد الكامل."
+        if (requestCode == PICK_REFERENCE) {
+            referenceUri = uri
+            referenceName = queryName(uri)
+            referenceInfo.text = "المرجع المخصص: ${referenceName ?: "WAV"} · أدخل النص الحرفي قبل التوليد"
+            status.text = "تم اختيار مرجع صوتي مخصص. أدخل نصه الحرفي ثم اختبر مقطعاً."
+        } else {
+            bookUri = uri
+            bookName = queryName(uri)
+            val base = bookName?.substringBeforeLast('.').orEmpty()
+            if (titleInput.text.isBlank()) titleInput.setText(base)
+            bookInfo.text = "الكتاب: ${bookName ?: "ملف مختار"}"
+            status.text = "تم اختيار الكتاب. اختبر مقطعاً واحداً قبل التوليد الكامل."
+        }
     }
 
     private fun startGeneration(previewOnly: Boolean) {
@@ -316,6 +364,10 @@ class MainActivityV3 : Activity() {
             putExtra(AudiobookService.EXTRA_TITLE, bookTitle)
             putExtra(AudiobookService.EXTRA_DISPLAY_NAME, bookName)
             putExtra(AudiobookService.EXTRA_PREVIEW_ONLY, previewOnly)
+            referenceUri?.let { putExtra(AudiobookService.EXTRA_REFERENCE_URI, it.toString()) }
+            if (referenceUri != null) {
+                putExtra(AudiobookService.EXTRA_REFERENCE_TEXT, referenceTranscript.text.toString().trim())
+            }
         }
         progress.visibility = View.VISIBLE
         progress.progress = 0
