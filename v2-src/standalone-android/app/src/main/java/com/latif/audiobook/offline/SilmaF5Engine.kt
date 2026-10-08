@@ -212,9 +212,9 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
     fun referenceFromUri(uri: android.net.Uri, transcript: String): VoiceReference {
         require(transcript.isNotBlank()) { "Reference transcript is required for voice cloning" }
         val samples = WavPcm.fromUri(context, uri, sampleRate)
-        val maxSamples = sampleRate * 15
+        val maxSamples = sampleRate * 8
         val trimmed = if (samples.size > maxSamples) samples.copyOf(maxSamples) else samples
-        require(trimmed.size >= sampleRate * 2) { "Reference voice should be at least 2 seconds" }
+        require(trimmed.size >= sampleRate * 3) { "Reference voice should be at least 3 seconds" }
         return VoiceReference(trimmed, transcript.trim())
     }
 

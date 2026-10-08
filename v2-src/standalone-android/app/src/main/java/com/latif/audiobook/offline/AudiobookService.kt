@@ -118,8 +118,18 @@ class AudiobookService : Service() {
                 }
             }
 
-            sendProgress(4, "Loading permanent author narrator voice…")
-            val reference = engine.builtInReference()
+            sendProgress(4, "Loading author narrator reference voice…")
+            val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+            val savedReference = prefs.getString(KEY_REFERENCE_URI, null)?.takeIf { it.isNotBlank() }
+            val savedTranscript = prefs.getString(KEY_REFERENCE_TEXT, null).orEmpty().trim()
+            val reference = if (savedReference != null) {
+                require(savedTranscript.isNotBlank()) {
+                    "Reference transcript is required. Enter the exact words spoken in the selected WAV."
+                }
+                engine.referenceFromUri(Uri.parse(savedReference), savedTranscript)
+            } else {
+                engine.builtInReference()
+            }
 
             val outputTitle = if (previewOnly) "$title — Author Narrator preview" else title
             val metadata = AudiobookMetadata(
@@ -397,8 +407,10 @@ class AudiobookService : Service() {
         const val KEY_LAST_BACKEND = "lastBackend"
         const val KEY_LAST_NFE_STEPS = "lastNfeSteps"
         const val KEY_LAST_FIRST_SECTION_MS = "lastFirstSectionMs"
-        // 24 steps retain strong F5 quality while reducing denoising work by 25%.
-        const val DEFAULT_NFE_STEPS = 24
+        const val KEY_REFERENCE_URI = "referenceUri"
+        const val KEY_REFERENCE_TEXT = "referenceText"
+        // Maximum supported F5 refinement for the highest offline voice quality.
+        const val DEFAULT_NFE_STEPS = 32
         const val AUTHOR_SPEED = 0.90f
         const val NARRATOR_NAME = "LATIF Author Narrator"
         private const val CHANNEL_ID = "latif_audiobook_render"

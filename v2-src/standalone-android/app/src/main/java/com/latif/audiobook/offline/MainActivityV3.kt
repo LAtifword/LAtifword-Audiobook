@@ -29,6 +29,7 @@ import android.widget.Toast
 class MainActivityV3 : Activity() {
     private var bookUri: Uri? = null
     private var bookName: String? = null
+    private var referenceUri: Uri? = null
 
     private lateinit var titleInput: EditText
     private lateinit var textInput: EditText
@@ -40,6 +41,8 @@ class MainActivityV3 : Activity() {
     private lateinit var cancel: Button
     private lateinit var play: Button
     private lateinit var share: Button
+    private lateinit var referenceInfo: TextView
+    private lateinit var referenceTextInput: EditText
 
     private val bg = Color.rgb(8, 10, 16)
     private val panelColor = Color.rgb(18, 22, 34)
@@ -145,7 +148,31 @@ class MainActivityV3 : Activity() {
             addView(body("الجهاز: ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}"))
         })
 
-        root.addView(kicker("01 / الكتاب"))
+        root.addView(kicker("01 / الصوت المرجعي"))
+        root.addView(panel().apply {
+            addView(title("نفس صوت المرجع — Offline Voice Clone"))
+            addView(body("اختر WAV نظيفاً بين 3 و8 ثوانٍ، ثم أدخل نصه المطابق حرفياً. يحفظ التطبيق الاختيار محلياً ويستخدمه لكل كتاب لاحقاً دون API أو خادم."))
+            addView(button("اختيار WAV للصوت المرجعي", false).apply { setOnClickListener { chooseReference() } })
+            referenceInfo = body(referenceSummary())
+            addView(referenceInfo)
+            referenceTextInput = field("النص المطابق للصوت المرجعي", false).apply {
+                minLines = 2
+                maxLines = 4
+                gravity = Gravity.TOP or Gravity.START
+                textDirection = View.TEXT_DIRECTION_RTL
+                setText(getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE).getString(AudiobookService.KEY_REFERENCE_TEXT, ""))
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                        getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE).edit().putString(AudiobookService.KEY_REFERENCE_TEXT, s?.toString().orEmpty()).apply()
+                    }
+                    override fun afterTextChanged(s: android.text.Editable?) = Unit
+                })
+            }
+            addView(referenceTextInput, params(top = 8))
+        })
+
+        root.addView(kicker("02 / الكتاب"))
         root.addView(button("اختيار PDF · EPUB · DOCX · TXT", true).apply {
             setOnClickListener { chooseBook() }
         })
@@ -161,7 +188,7 @@ class MainActivityV3 : Activity() {
         }
         root.addView(textInput, params(top = 10))
 
-        root.addView(kicker("02 / خط الإنتاج"))
+        root.addView(kicker("03 / خط الإنتاج"))
         root.addView(panel().apply {
             addView(title("Offline author-grade path"))
             addView(body("SILMA F5 ONNX · 24 kHz · AAC-LC 128 kbps M4A · كتابة مؤقتة آمنة ثم نشر نهائي."))
@@ -169,7 +196,7 @@ class MainActivityV3 : Activity() {
             addView(body("ملفات الموديل تتحقق من أحجامها قبل تشغيل ONNX، وأي backend يفشل يُغلق بالكامل قبل تجربة البديل."))
         })
 
-        root.addView(kicker("03 / الاختبار ثم التوليد"))
+        root.addView(kicker("04 / الاختبار ثم التوليد"))
         preview = button("اختبار مقطع واحد أولاً", false).apply {
             setOnClickListener { startGeneration(previewOnly = true) }
         }
@@ -243,13 +270,33 @@ class MainActivityV3 : Activity() {
         )
     }
 
+    private fun chooseReference() {
+        startActivityForResult(
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "audio/wav"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            },
+            PICK_REFERENCE,
+        )
+    }
+
     @Deprecated("Deprecated Android callback retained for API 26 compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK || requestCode != PICK_BOOK) return
+        if (resultCode != RESULT_OK || (requestCode != PICK_BOOK && requestCode != PICK_REFERENCE)) return
         val uri = data?.data ?: return
         runCatching {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (requestCode == PICK_REFERENCE) {
+            referenceUri = uri
+            getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE).edit()
+                .putString(AudiobookService.KEY_REFERENCE_URI, uri.toString())
+                .apply()
+            referenceInfo.text = referenceSummary()
+            status.text = "تم حفظ الصوت المرجعي. أدخل النص المطابق ثم اختبر مقطعاً واحداً."
+            return
         }
         bookUri = uri
         bookName = queryName(uri)
@@ -295,6 +342,16 @@ class MainActivityV3 : Activity() {
         if (!raw.isNullOrBlank()) {
             play.visibility = View.VISIBLE
             share.visibility = View.VISIBLE
+        }
+    }
+
+    private fun referenceSummary(): String {
+        val raw = getSharedPreferences(AudiobookService.PREFS, MODE_PRIVATE)
+            .getString(AudiobookService.KEY_REFERENCE_URI, null)
+        return if (raw.isNullOrBlank()) {
+            "المرجع الحالي: الصوت المضمن داخل التطبيق"
+        } else {
+            "المرجع الحالي: ${queryName(Uri.parse(raw)) ?: "WAV محفوظ"}"
         }
     }
 
@@ -399,5 +456,6 @@ class MainActivityV3 : Activity() {
 
     companion object {
         private const val PICK_BOOK = 501
+        private const val PICK_REFERENCE = 502
     }
 }
