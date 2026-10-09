@@ -1,0 +1,42 @@
+name: Desktop voice-quality regression tests
+
+on:
+  push:
+    branches:
+      - fix/voice-clone-quality-20261009
+  pull_request:
+    paths:
+      - 'desktop-v3.3/**'
+      - '.github/workflows/test_desktop_voice_quality.yml'
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: desktop-v3.3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: desktop-v3.3/requirements-win.txt
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            'numpy>=2,<3' \
+            'onnxruntime>=1.20,<2' \
+            'pytest>=8,<10' \
+            'pypdf>=5,<7' \
+            'python-docx>=1.1,<2' \
+            'ebooklib>=0.19,<1' \
+            'beautifulsoup4>=4.12,<5' \
+            'imageio-ffmpeg>=0.6,<1' \
+            'av>=14,<19'
+      - name: Compile desktop sources
+        run: python -m compileall -q latif_voice_studio tests
+      - name: Run desktop regression tests
+        run: python -m pytest -q tests
