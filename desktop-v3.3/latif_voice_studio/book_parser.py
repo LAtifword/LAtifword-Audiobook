@@ -29,7 +29,7 @@ def read_book(path: str | Path) -> str:
 
 def _read_text(path: Path) -> str:
     raw = path.read_bytes()
-    for enc in ("utf-8-sig", "utf-16", "utf-8", "cp1252"):
+    for enc in ("utf-8-sig", "utf-16", "utf-8", "cp1256", "cp1252"):
         try:
             return raw.decode(enc)
         except UnicodeDecodeError:
@@ -40,6 +40,7 @@ def _read_text(path: Path) -> str:
 def clean_text(text: str) -> str:
     text = text.replace("\u00a0", " ").replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -51,21 +52,68 @@ def prepare_for_narration(text: str) -> str:
     return text
 
 
+def _split_long_piece(value: str, target_chars: int) -> list[str]:
+    """Split only when necessary, preferring Arabic/Latin clause boundaries."""
+    if len(value) <= int(target_chars * 1.55):
+        return [value]
+    clauses = [item.strip() for item in re.split(r"(?<=[،,:؛;])\s+", value) if item.strip()]
+    if len(clauses) <= 1:
+        clauses = [value]
+    output: list[str] = []
+    current = ""
+    for clause in clauses:
+        candidate = f"{current} {clause}".strip() if current else clause
+        if current and len(candidate) > int(target_chars * 1.25):
+            output.append(current)
+            current = clause
+        else:
+            current = candidate
+    if current:
+        output.append(current)
+    return output
+
+
+def _rebalance_short_chunks(chunks: list[str], target_chars: int) -> list[str]:
+    """Avoid many tiny F5 calls, which sound like repeated narrator restarts."""
+    if len(chunks) < 2:
+        return chunks
+    minimum = max(55, int(target_chars * 0.33))
+    maximum = int(target_chars * 1.30)
+    balanced: list[str] = []
+    index = 0
+    while index < len(chunks):
+        current = chunks[index].strip()
+        if len(current) < minimum and index + 1 < len(chunks):
+            merged = f"{current} {chunks[index + 1].strip()}".strip()
+            if len(merged) <= maximum:
+                balanced.append(merged)
+                index += 2
+                continue
+        if len(current) < minimum and balanced:
+            merged = f"{balanced[-1]} {current}".strip()
+            if len(merged) <= maximum:
+                balanced[-1] = merged
+                index += 1
+                continue
+        balanced.append(current)
+        index += 1
+    return balanced
+
+
 def split_for_narration(text: str, target_chars: int = 220) -> list[str]:
     text = clean_text(text)
     if not text:
         return []
-    sentences = re.split(r"(?<=[\.!؟!؛…])\s+|\n+", text)
+
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[\.!؟!؛…])\s+|\n+", text)
+        if item.strip()
+    ]
     chunks: list[str] = []
     current = ""
-    for sentence in (s.strip() for s in sentences if s.strip()):
-        if len(sentence) > target_chars * 2:
-            pieces = re.split(r"(?<=[،,:؛;])\s+", sentence)
-        else:
-            pieces = [sentence]
-        for piece in pieces:
-            if not piece:
-                continue
+    for sentence in sentences:
+        for piece in _split_long_piece(sentence, target_chars):
             candidate = f"{current} {piece}".strip() if current else piece
             if current and len(candidate) > target_chars:
                 chunks.append(current.strip())
@@ -74,7 +122,7 @@ def split_for_narration(text: str, target_chars: int = 220) -> list[str]:
                 current = candidate
     if current.strip():
         chunks.append(current.strip())
-    return chunks
+    return _rebalance_short_chunks(chunks, target_chars)
 
 
 def target_chars_for_steps(steps: int) -> int:

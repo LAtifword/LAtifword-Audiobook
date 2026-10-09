@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import sys
@@ -15,6 +16,7 @@ import onnxruntime as ort
 SAMPLE_RATE = 24_000
 MIN_STEPS = 8
 MAX_STEPS = 32
+AUTHOR_SPEED = 0.90
 _ARABIC_SPACES = re.compile(r"[ \t]+")
 _ARABIC_PUNCTUATION = re.compile(r" *([،؛:,.!?؟…]) *")
 _ARABIC_NEWLINES = re.compile(r"\s+")
@@ -71,6 +73,14 @@ def read_pcm_wav(path: Path, target_rate: int = SAMPLE_RATE) -> np.ndarray:
 class VoiceReference:
     samples: np.ndarray
     transcript: str
+
+    @property
+    def fingerprint(self) -> str:
+        digest = hashlib.sha256()
+        digest.update(np.asarray(self.samples, dtype="<i2").tobytes())
+        digest.update(b"\0")
+        digest.update(prepare_arabic_text(self.transcript).encode("utf-8"))
+        return digest.hexdigest()
 
 
 class GenerationCancelled(RuntimeError):
@@ -130,7 +140,6 @@ class SilmaDesktopEngine:
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         options.inter_op_num_threads = 1
         if directml:
-            # Required by the DirectML execution provider.
             options.enable_mem_pattern = False
             options.intra_op_num_threads = 1
         else:
@@ -212,13 +221,18 @@ class SilmaDesktopEngine:
         return VoiceReference(samples=samples, transcript=DEFAULT_REFERENCE_TEXT)
 
     def custom_reference(self, wav_path: Path, transcript: str) -> VoiceReference:
-        if not transcript.strip():
+        normalized_transcript = prepare_arabic_text(transcript)
+        if not normalized_transcript:
             raise ValueError("Reference transcript is required for a custom voice")
         samples = read_pcm_wav(wav_path, SAMPLE_RATE)
         if samples.size < SAMPLE_RATE * 2:
             raise ValueError("Reference voice should be at least 2 seconds")
         samples = samples[: SAMPLE_RATE * 15]
-        return VoiceReference(samples=samples, transcript=transcript.strip())
+        return VoiceReference(samples=samples, transcript=normalized_transcript)
+
+    # Renderer/UI compatibility. Keep one canonical implementation above.
+    def reference_from_wav(self, wav_path: Path, transcript: str) -> VoiceReference:
+        return self.custom_reference(wav_path, transcript)
 
     def _encode(self, text: str) -> np.ndarray:
         ids = np.zeros(len(text), dtype=np.int32)
@@ -232,7 +246,7 @@ class SilmaDesktopEngine:
 
     @staticmethod
     def _normalize_reference_text(text: str) -> str:
-        value = text.strip()
+        value = prepare_arabic_text(text)
         return value if value.endswith(" ") else value + " "
 
     @staticmethod
@@ -243,26 +257,35 @@ class SilmaDesktopEngine:
         speed: float,
         tail_padding_frames: int = 12,
     ) -> int:
-        ref_bytes = max(1, len(reference_text.encode("utf-8")))
-        gen_bytes = len(generation_text.encode("utf-8"))
+        """Estimate F5 duration from model text units, not UTF-8 byte counts.
+
+        The previous implementation used encoded byte lengths. Arabic characters are
+        commonly two UTF-8 bytes while Latin characters and digits are often one,
+        so mixed Arabic/Latin/number text could receive a badly biased duration.
+        The ONNX text input is character indexed, so Unicode codepoint counts are
+        the closer proxy for the actual conditioning sequence.
+        """
+        ref_units = max(1, len(reference_text))
+        gen_units = max(1, len(generation_text))
         ref_frames = reference_samples // 256 + 1
         rate = 1.0 if speed <= 0 else float(speed)
-        return int(
-            ref_frames
-            + (ref_frames / ref_bytes) * gen_bytes / rate
-            + max(0, tail_padding_frames)
-        )
+        generated_frames = (ref_frames / ref_units) * gen_units / rate
+        generated_frames = max(8.0, min(generated_frames, ref_frames * 8.0))
+        return int(ref_frames + generated_frames + max(0, tail_padding_frames))
 
     def synthesize(
         self,
         reference: VoiceReference,
         text: str,
-        speed: float = 0.90,
+        speed: float = AUTHOR_SPEED,
         nfe_steps: int = 32,
         cancel_event: Event | None = None,
         on_step: Callable[[int, int], None] | None = None,
+        cancel: Event | None = None,
     ) -> np.ndarray:
         self.load()
+        if cancel_event is None:
+            cancel_event = cancel
         if not text.strip():
             raise ValueError("Narration text is empty")
         if reference.samples.size == 0:
