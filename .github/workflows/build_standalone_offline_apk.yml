@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build:
@@ -25,17 +26,24 @@ jobs:
           test -f standalone-android/app/build.gradle.kts
           unzip -t /tmp/latif-source.zip >/dev/null
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK
+      - name: Prepare preinstalled Android SDK
+        shell: bash
         run: |
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          set -euxo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          test -x "$SDK_ROOT/build-tools/35.0.0/apksigner"
+          test -x "$SDK_ROOT/build-tools/35.0.0/zipalign"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -46,12 +54,12 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p app/libs app/src/main/assets
-          curl -L --retry 5 --retry-delay 3 \
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 \
             -o app/libs/sherpa-onnx-1.13.8.aar \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
           echo "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96  app/libs/sherpa-onnx-1.13.8.aar" | sha256sum -c -
 
-          curl -L --retry 5 --retry-delay 3 \
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 \
             -o /tmp/supertonic.tar.bz2 \
             https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2
           tar -xjf /tmp/supertonic.tar.bz2 -C app/src/main/assets
@@ -75,6 +83,7 @@ jobs:
           name: LATIF-AUDIOBOOK-AI-OFFLINE-APK
           path: release/*
           retention-days: 30
+          compression-level: 0
 
       - name: Publish installable APK release
         env:
