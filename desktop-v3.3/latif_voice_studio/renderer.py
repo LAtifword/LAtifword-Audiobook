@@ -71,17 +71,26 @@ class AudiobookRenderer:
             chunks = chunks[:1]
 
         request.output_dir.mkdir(parents=True, exist_ok=True)
-        job_id = self._job_id(request, text)
+        job_id = self._job_id(request, text, reference)
         job_cache = cache_dir() / job_id
         job_cache.mkdir(parents=True, exist_ok=True)
         manifest_path = job_cache / "manifest.json"
         manifest = self._load_manifest(manifest_path)
-        manifest.setdefault("version", 1)
+        manifest.setdefault("version", 2)
+        manifest.setdefault("voice_fingerprint", reference.fingerprint)
         manifest.setdefault("sections", {})
+
+        if manifest.get("voice_fingerprint") != reference.fingerprint:
+            manifest = {
+                "version": 2,
+                "voice_fingerprint": reference.fingerprint,
+                "sections": {},
+            }
 
         self.log(
             f"Backend: {self.engine.backend_name} | sections={len(chunks)} | "
-            f"steps={request.steps} | speed={request.speed:.2f}x"
+            f"steps={request.steps} | speed={request.speed:.2f}x | "
+            f"voice={reference.fingerprint[:12]}"
         )
 
         started = time.perf_counter()
@@ -105,6 +114,9 @@ class AudiobookRenderer:
             if (
                 cached
                 and cached.get("text_sha256") == chunk_key
+                and cached.get("voice_fingerprint") == reference.fingerprint
+                and cached.get("steps") == int(request.steps)
+                and abs(float(cached.get("speed", -1.0)) - float(request.speed)) < 1e-6
                 and chunk_file.is_file()
                 and chunk_file.stat().st_size > 44
             ):
@@ -128,9 +140,10 @@ class AudiobookRenderer:
                     text=clean,
                     speed=request.speed,
                     nfe_steps=request.steps,
-                    cancel=self.cancel,
+                    cancel_event=self.cancel,
                     on_step=on_step,
                 )
+                samples = _edge_taper(samples, milliseconds=4)
                 compute_s = time.perf_counter() - section_start
                 audio_s = samples.size / SAMPLE_RATE
                 measured_compute += compute_s
@@ -138,6 +151,9 @@ class AudiobookRenderer:
                 _write_pcm_wav(chunk_file, samples)
                 manifest["sections"][str(index)] = {
                     "text_sha256": chunk_key,
+                    "voice_fingerprint": reference.fingerprint,
+                    "steps": int(request.steps),
+                    "speed": float(request.speed),
                     "sample_count": int(samples.size),
                     "seconds": audio_s,
                 }
@@ -188,9 +204,10 @@ class AudiobookRenderer:
         sidecar_path = request.output_dir / f"{safe_title}.chapters.json"
         sidecar = {
             "schema": "latif-audiobook-chapters",
-            "version": 1,
+            "version": 2,
             "bookTitle": request.title or safe_title,
-            "narrator": "LATIF Author Narrator",
+            "narrator": "Custom reference" if request.reference_wav else "LATIF Author Narrator",
+            "voiceFingerprint": reference.fingerprint,
             "backend": self.engine.backend_name,
             "sampleRate": SAMPLE_RATE,
             "speed": request.speed,
@@ -216,7 +233,7 @@ class AudiobookRenderer:
     def _reference(self, request: RenderRequest) -> VoiceReference:
         if request.reference_wav:
             self.progress(3, "Loading custom reference voice…")
-            return self.engine.reference_from_wav(request.reference_wav, request.reference_text)
+            return self.engine.custom_reference(request.reference_wav, request.reference_text)
         self.progress(3, "Loading permanent Author Narrator voice…")
         return self.engine.built_in_reference()
 
@@ -237,11 +254,10 @@ class AudiobookRenderer:
                 if pause_samples > 0:
                     out.writeframes(np.zeros(pause_samples, dtype="<i2").tobytes())
 
-    def _job_id(self, request: RenderRequest, text: str) -> str:
-        voice = str(request.reference_wav or "builtin-author-narrator")
+    def _job_id(self, request: RenderRequest, text: str, reference: VoiceReference) -> str:
         payload = (
-            f"v3.3|{request.steps}|{request.speed:.4f}|{voice}|"
-            f"{request.reference_text}|{text}"
+            f"v3.3-quality2|{request.steps}|{request.speed:.4f}|"
+            f"{reference.fingerprint}|{text}"
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
@@ -263,6 +279,18 @@ class AudiobookRenderer:
     def _check_cancelled(self) -> None:
         if self.cancel.is_set():
             raise GenerationCancelled()
+
+
+def _edge_taper(samples: np.ndarray, milliseconds: int = 4) -> np.ndarray:
+    values = np.asarray(samples, dtype=np.int16)
+    fade = min(values.size // 2, max(0, int(SAMPLE_RATE * milliseconds / 1000)))
+    if fade <= 1:
+        return values
+    out = values.astype(np.float32, copy=True)
+    ramp = np.linspace(0.0, 1.0, fade, dtype=np.float32)
+    out[:fade] *= ramp
+    out[-fade:] *= ramp[::-1]
+    return np.clip(np.rint(out), -32768, 32767).astype(np.int16)
 
 
 def _write_pcm_wav(path: Path, samples: np.ndarray) -> None:
@@ -310,10 +338,10 @@ def _encode_m4a(source_wav: Path, destination: Path) -> None:
 
 def _pause_after(text: str) -> int:
     if text.endswith(("؟", "!")):
-        return 180
+        return 210
     if text.endswith((".", "…", "؛")):
-        return 140
-    return 70
+        return 165
+    return 80
 
 
 def _safe_filename(value: str) -> str:
