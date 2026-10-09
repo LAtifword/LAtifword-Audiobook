@@ -59,13 +59,15 @@ class AudiobookService : Service() {
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "LATIF Audiobook" }
         val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME)
         val previewOnly = intent.getBooleanExtra(EXTRA_PREVIEW_ONLY, false)
+        val referenceUri = intent.getStringExtra(EXTRA_REFERENCE_URI)?.let(Uri::parse)
+        val referenceText = intent.getStringExtra(EXTRA_REFERENCE_TEXT).orEmpty()
 
         running = true
         cancelled.set(false)
         startForeground(NOTIFICATION_ID, notification("Preparing SILMA Author Narrator…", 0, true))
         renderJob = serviceScope.launch {
             runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
-            runJob(uri, rawText, title, displayName, previewOnly)
+            runJob(uri, rawText, title, displayName, previewOnly, referenceUri, referenceText)
         }
         return START_NOT_STICKY
     }
@@ -76,6 +78,8 @@ class AudiobookService : Service() {
         title: String,
         displayName: String?,
         previewOnly: Boolean,
+        referenceUri: Uri?,
+        referenceText: String,
     ) {
         val profile = NarrationProfile.LITERARY
         val speed = AUTHOR_SPEED
@@ -118,8 +122,14 @@ class AudiobookService : Service() {
                 }
             }
 
-            sendProgress(4, "Loading permanent author narrator voice…")
-            val reference = engine.builtInReference()
+            val reference = if (referenceUri != null) {
+                require(referenceText.isNotBlank()) { "Custom reference transcript is required." }
+                sendProgress(4, "Loading custom reference voice…")
+                engine.referenceFromUri(referenceUri, referenceText)
+            } else {
+                sendProgress(4, "Loading fixed voice · ${VoiceReferenceConfig.ID}…")
+                engine.builtInReference()
+            }
 
             val outputTitle = if (previewOnly) "$title — Author Narrator preview" else title
             val metadata = AudiobookMetadata(
@@ -291,12 +301,17 @@ class AudiobookService : Service() {
         is SilmaModelException.AssetExtractionFailed -> "Model installation failed: ${error.assetPath}"
     }
 
+    /**
+     * Larger semantic sections amortize F5 reference and encoder overhead.
+     * BookParser still splits at sentence boundaries and hard-wraps only when
+     * a sentence exceeds the limit.
+     */
     private fun chunkSizeFor(steps: Int): Int = when {
-        steps <= 8 -> 140
-        steps <= 12 -> 160
-        steps <= 16 -> 180
-        steps <= 24 -> 200
-        else -> 220
+        steps <= 8 -> 360
+        steps <= 12 -> 440
+        steps <= 16 -> 500
+        steps <= 24 -> 560
+        else -> 600
     }
 
     private fun formatDuration(milliseconds: Long): String {
@@ -377,6 +392,11 @@ class AudiobookService : Service() {
         const val EXTRA_TITLE = "title"
         const val EXTRA_DISPLAY_NAME = "displayName"
         const val EXTRA_PREVIEW_ONLY = "previewOnly"
+        const val EXTRA_REFERENCE_URI = "referenceUri"
+        const val EXTRA_REFERENCE_TEXT = "referenceText"
+        // Kept for compatibility with the legacy MainActivity launcher.
+        const val EXTRA_PROFILE = "profile"
+        const val EXTRA_SPEED = "speed"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_MESSAGE = "message"
         const val EXTRA_OUTPUT_URI = "outputUri"
@@ -389,7 +409,8 @@ class AudiobookService : Service() {
         const val KEY_LAST_BACKEND = "lastBackend"
         const val KEY_LAST_NFE_STEPS = "lastNfeSteps"
         const val KEY_LAST_FIRST_SECTION_MS = "lastFirstSectionMs"
-        const val DEFAULT_NFE_STEPS = 32
+        // 24 steps retain strong F5 quality while reducing denoising work by 25%.
+        const val DEFAULT_NFE_STEPS = 24
         const val AUTHOR_SPEED = 0.90f
         const val NARRATOR_NAME = "LATIF Author Narrator"
         private const val CHANNEL_ID = "latif_audiobook_render"

@@ -29,6 +29,8 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
     private var decoder: OrtSession? = null
     private var sessionOptions: OrtSession.SessionOptions? = null
     private var vocab: Map<String, Int> = emptyMap()
+    private val charVocab = IntArray(Char.MAX_VALUE.code + 1)
+    private val charPresent = BooleanArray(Char.MAX_VALUE.code + 1)
 
     val sampleRate: Int = 24_000
     val workerThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
@@ -327,7 +329,10 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
     private fun encode(text: String): IntArray {
         val out = IntArray(text.length)
-        for (i in text.indices) out[i] = vocab[text[i].toString()] ?: 0
+        for (i in text.indices) {
+            val code = text[i].code
+            out[i] = if (charPresent[code]) charVocab[code] else vocab[text[i].toString()] ?: 0
+        }
         return out
     }
 
@@ -549,7 +554,13 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                     val map = LinkedHashMap<String, Int>()
                     lines.forEachIndexed { index, raw ->
                         val token = raw.removeSuffix("\r")
-                        if (token.isNotEmpty()) map[token] = index
+                        if (token.isNotEmpty()) {
+                            map[token] = index
+                            if (token.length == 1) {
+                                charVocab[token[0].code] = index
+                                charPresent[token[0].code] = true
+                            }
+                        }
                     }
                     map
                 }
