@@ -107,7 +107,9 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="latif-m4a-") as temp:
         ffmeta = Path(temp) / "metadata.txt"
         write_ffmetadata(ffmeta, metadata, chapters)
-        temp_output = args.output.with_suffix(args.output.suffix + ".tmp")
+        # Keep the final container extension so FFmpeg selects the MP4/M4A muxer.
+        # The temp file stays beside the destination so replace() is atomic.
+        temp_output = args.output.with_name(f".{args.output.stem}.tmp.m4a")
         temp_output.unlink(missing_ok=True)
 
         command = [
