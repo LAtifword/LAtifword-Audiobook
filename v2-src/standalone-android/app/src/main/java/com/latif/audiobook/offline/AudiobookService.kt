@@ -65,8 +65,6 @@ class AudiobookService : Service() {
         val refText = ""
         val previewOnly = intent.getBooleanExtra(EXTRA_PREVIEW_ONLY, false)
         val nfeSteps = DEFAULT_NFE_STEPS
-        val previewOnly = intent.getBooleanExtra(EXTRA_PREVIEW_ONLY, false)
-   mainLAtifword
 
         running = true
         cancelled.set(false)
