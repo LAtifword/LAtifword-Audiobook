@@ -2,6 +2,7 @@ package com.latif.audiobook.offline
 
 import java.io.File
 
+/** Historical type name retained during the Habibi migration; all failures refer to Habibi MSA. */
 sealed class SilmaModelException(
     message: String,
     cause: Throwable? = null,
@@ -11,7 +12,7 @@ sealed class SilmaModelException(
         val assetPath: String,
         cause: Throwable? = null,
     ) : SilmaModelException(
-        "Required SILMA asset is missing: $assetPath",
+        "Required Habibi MSA asset is missing: $assetPath",
         cause,
     )
 
@@ -20,7 +21,7 @@ sealed class SilmaModelException(
         val destination: File,
         cause: Throwable? = null,
     ) : SilmaModelException(
-        "Failed to extract SILMA asset '$assetPath' to ${destination.absolutePath}",
+        "Failed to extract Habibi MSA asset '$assetPath' to ${destination.absolutePath}",
         cause,
     )
 
@@ -29,7 +30,7 @@ sealed class SilmaModelException(
         val actualBytes: Long,
         val minimumBytes: Long,
     ) : SilmaModelException(
-        "SILMA asset '$assetPath' is incomplete: $actualBytes bytes; minimum expected is $minimumBytes bytes",
+        "Habibi MSA asset '$assetPath' is incomplete: $actualBytes bytes; minimum expected is $minimumBytes bytes",
     )
 
     class AssetSizeMismatch(
@@ -37,7 +38,7 @@ sealed class SilmaModelException(
         val actualBytes: Long,
         val expectedBytes: Long,
     ) : SilmaModelException(
-        "SILMA asset '$assetPath' has incorrect size: $actualBytes bytes; expected $expectedBytes bytes",
+        "Habibi MSA asset '$assetPath' has incorrect size: $actualBytes bytes; packaged size is $expectedBytes bytes",
     )
 
     class AssetHashMismatch(
@@ -45,14 +46,14 @@ sealed class SilmaModelException(
         val actualHash: String,
         val expectedHash: String,
     ) : SilmaModelException(
-        "SILMA asset '$assetPath' has incorrect SHA-256. Actual=$actualHash Expected=$expectedHash",
+        "Habibi MSA asset '$assetPath' has incorrect SHA-256. Actual=$actualHash Expected=$expectedHash",
     )
 
     class OnnxInitializationFailed(
         val backend: String,
         cause: Throwable,
     ) : SilmaModelException(
-        "Unable to initialize ONNX Runtime backend '$backend': ${cause.message ?: cause.javaClass.simpleName}",
+        "Unable to initialize Habibi MSA ONNX Runtime backend '$backend': ${cause.message ?: cause.javaClass.simpleName}",
         cause,
     )
 
@@ -60,7 +61,7 @@ sealed class SilmaModelException(
         val failures: List<SilmaModelException>,
     ) : SilmaModelException(
         buildString {
-            append("All SILMA ONNX Runtime backends failed.")
+            append("All Habibi MSA ONNX Runtime backends failed.")
             failures.forEachIndexed { index, failure ->
                 append("\n${index + 1}. ${failure.message}")
             }
