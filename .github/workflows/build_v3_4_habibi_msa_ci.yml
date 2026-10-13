@@ -2,7 +2,7 @@ name: Build LATIF Voice Studio v3.4 Habibi MSA CI
 
 on:
   push:
-    branches: [habibi-msa-production]
+    branches: [habibi-msa-production, mainLAtifword]
   workflow_dispatch:
 
 permissions:
