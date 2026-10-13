@@ -21,6 +21,10 @@ android {
 
     buildTypes {
         debug {
+            // Runtime-fix test builds must coexist with the already-installed
+            // v3.4 candidate so physical A/B testing never requires uninstalling it.
+            applicationIdSuffix = ".habibifix"
+            versionNameSuffix = "-runtime-fix"
             isMinifyEnabled = false
             isShrinkResources = false
         }
