@@ -1,0 +1,129 @@
+name: Build LATIF Voice Studio v3.4 Habibi MSA CI
+
+on:
+  push:
+    branches: [habibi-msa-production]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      MODEL_REV: 78b2d00397fc1bc8064d8e4d849e794fa8325245
+      GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10.2'
+
+      - name: Stage Android project
+        run: |
+          set -euxo pipefail
+          rm -rf standalone-android release
+          cp -a v2-src/standalone-android standalone-android
+          mkdir -p release
+          BUILD=standalone-android/app/build.gradle.kts
+          ENGINE=standalone-android/app/src/main/java/com/latif/audiobook/offline/SilmaF5Engine.kt
+          SERVICE=standalone-android/app/src/main/java/com/latif/audiobook/offline/AudiobookService.kt
+          UI=standalone-android/app/src/main/java/com/latif/audiobook/offline/MainActivityV3.kt
+          grep -q 'versionName = "3.4.0-habibi-msa"' "$BUILD"
+          grep -q 'versionCode = 12' "$BUILD"
+          grep -q 'habibi-f5/model.onnx' "$ENGINE"
+          python - <<'PY'
+          from pathlib import Path
+          for name in ['AudiobookService.kt', 'MainActivityV3.kt']:
+              p = Path('standalone-android/app/src/main/java/com/latif/audiobook/offline') / name
+              if not p.exists():
+                  continue
+              s = p.read_text(encoding='utf-8')
+              s = s.replace('const val DEFAULT_NFE_STEPS = 24', 'const val DEFAULT_NFE_STEPS = 32')
+              s = s.replace('SILMA', 'Habibi MSA')
+              s = s.replace('LATIF Voice Studio 3.3', 'LATIF Voice Studio 3.4')
+              p.write_text(s, encoding='utf-8')
+          PY
+          grep -q 'const val DEFAULT_NFE_STEPS = 32' "$SERVICE"
+
+      - name: Download pinned Habibi MSA assets
+        run: |
+          set -euxo pipefail
+          ASSETS=standalone-android/app/src/main/assets/habibi-f5
+          rm -rf "$ASSETS"
+          mkdir -p "$ASSETS"
+          BASE="https://huggingface.co/OpenVoiceOS/phoonnx-f5tts/resolve/$MODEL_REV/habibi-tts-msa"
+          for file in model.onnx F5_Preprocess.onnx F5_Decode.onnx vocab.txt config.json; do
+            curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/$file" "$BASE/$file?download=true"
+          done
+          curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/default_ref.wav" 'https://huggingface.co/spaces/silma-ai/silma-tts-v1-demo/resolve/main/ar.ref.24k.wav?download=true'
+          test "$(stat -c%s "$ASSETS/model.onnx")" -ge 500000000
+          test "$(stat -c%s "$ASSETS/F5_Preprocess.onnx")" -ge 1000000
+          test "$(stat -c%s "$ASSETS/F5_Decode.onnx")" -ge 1000000
+          test "$(stat -c%s "$ASSETS/config.json")" -ge 1000
+          test "$(stat -c%s "$ASSETS/vocab.txt")" -ge 5000
+          test "$(stat -c%s "$ASSETS/default_ref.wav")" -ge 10000
+          sha256sum "$ASSETS"/* | tee release/HABIBI-MODEL-SHA256SUMS.txt
+          for file in "$ASSETS"/*; do stat -c '%n %s bytes' "$file"; done | tee release/HABIBI-MODEL-ASSETS.txt
+
+      - name: Verify ONNX contract
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          python -m pip install --quiet 'onnx>=1.17,<2'
+          python - <<'PY'
+          import json, onnx
+          from pathlib import Path
+          root=Path('app/src/main/assets/habibi-f5')
+          expected={
+            'F5_Preprocess.onnx':({'audio','text_ids','max_duration'},{'noise','rope_cos_q','rope_sin_q','rope_cos_k','rope_sin_k','cat_mel_text','cat_mel_text_drop','ref_signal_len'}),
+            'model.onnx':({'noise','rope_cos_q','rope_sin_q','rope_cos_k','rope_sin_k','cat_mel_text','cat_mel_text_drop','time_step.1'},{'denoised','time_step'}),
+            'F5_Decode.onnx':({'denoised','ref_signal_len'},{'output_audio'}),
+          }
+          for name,(need_in,need_out) in expected.items():
+              m=onnx.load(str(root/name), load_external_data=False)
+              have_in={x.name for x in m.graph.input}; have_out={x.name for x in m.graph.output}
+              assert need_in <= have_in, (name, need_in-have_in)
+              assert need_out <= have_out, (name, need_out-have_out)
+          cfg=json.loads((root/'config.json').read_text(encoding='utf-8'))
+          assert cfg.get('add_blank_char') is False
+          assert cfg.get('blank_at_start') is False
+          assert cfg.get('blank_at_end') is False
+          assert cfg.get('use_eos_bos') is False
+          assert cfg.get('engine_params',{}).get('add_diacritics') is False
+          assert int(cfg.get('engine_params',{}).get('nfe',0)) == 32
+          print('Habibi ONNX contract OK')
+          PY
+
+      - name: Build installable debug APK and unsigned release APK
+        working-directory: standalone-android
+        run: |
+          set -euxo pipefail
+          gradle --no-daemon --stacktrace :app:verifyHabibiAssets
+          gradle --no-daemon --stacktrace :app:compileReleaseKotlin
+          gradle --no-daemon --stacktrace :app:assembleDebug :app:assembleRelease
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          test -s app/build/outputs/apk/release/app-release-unsigned.apk
+          unzip -t app/build/outputs/apk/debug/app-debug.apk >/dev/null
+          unzip -t app/build/outputs/apk/release/app-release-unsigned.apk >/dev/null
+          cp app/build/outputs/apk/debug/app-debug.apk ../release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-DEBUG.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk ../release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-UNSIGNED.apk
+          sha256sum ../release/*.apk > ../release/SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-CI
+          path: |
+            release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-DEBUG.apk
+            release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-UNSIGNED.apk
+            release/SHA256SUMS.txt
+            release/HABIBI-MODEL-ASSETS.txt
+            release/HABIBI-MODEL-SHA256SUMS.txt
+          retention-days: 30
+          compression-level: 0
