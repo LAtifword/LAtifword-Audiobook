@@ -63,12 +63,23 @@ jobs:
             curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/$file" "$BASE/$file?download=true"
           done
           curl -L --fail --retry 8 --retry-delay 5 --connect-timeout 30 -o "$ASSETS/default_ref.wav" 'https://huggingface.co/spaces/silma-ai/silma-tts-v1-demo/resolve/main/ar.ref.24k.wav?download=true'
-          test "$(stat -c%s "$ASSETS/model.onnx")" -ge 500000000
-          test "$(stat -c%s "$ASSETS/F5_Preprocess.onnx")" -ge 1000000
-          test "$(stat -c%s "$ASSETS/F5_Decode.onnx")" -ge 1000000
-          test "$(stat -c%s "$ASSETS/config.json")" -ge 1000
-          test "$(stat -c%s "$ASSETS/vocab.txt")" -ge 5000
-          test "$(stat -c%s "$ASSETS/default_ref.wav")" -ge 10000
+
+          test "$(stat -c%s "$ASSETS/model.onnx")" -eq 1322088989
+          test "$(stat -c%s "$ASSETS/F5_Preprocess.onnx")" -eq 68788536
+          test "$(stat -c%s "$ASSETS/F5_Decode.onnx")" -eq 62546929
+          test "$(stat -c%s "$ASSETS/config.json")" -eq 46205
+          test "$(stat -c%s "$ASSETS/vocab.txt")" -eq 11698
+          test "$(stat -c%s "$ASSETS/default_ref.wav")" -eq 372680
+
+          cat > /tmp/habibi.sha256 <<'EOF'
+          a97e2a7003ebf671890ba536f0737f1a90b03f7365f07caa3c688ace36745bba  standalone-android/app/src/main/assets/habibi-f5/model.onnx
+          dcf8c549dc0887194d2a0c34130e632b75f96658d46397120853c5227389cad3  standalone-android/app/src/main/assets/habibi-f5/F5_Preprocess.onnx
+          b5679f9279ea797db83b67477ebfe2f6f0a38eadf7bdc351a1f7eaae9b302ab9  standalone-android/app/src/main/assets/habibi-f5/F5_Decode.onnx
+          af6370f72138edd7ad7cc5bf4c940b1976b559e1abf797ab7b8e2e4218415d30  standalone-android/app/src/main/assets/habibi-f5/config.json
+          4de4460ff1ef7cb40c2e564bc1ee2f3198164d10ce71380290986e483ba7e19c  standalone-android/app/src/main/assets/habibi-f5/vocab.txt
+          b6b88232c3b851a3d9833c66349c71b2527de346b467ccba944809bad776c7ae  standalone-android/app/src/main/assets/habibi-f5/default_ref.wav
+          EOF
+          sha256sum -c /tmp/habibi.sha256
           sha256sum "$ASSETS"/* | tee release/HABIBI-MODEL-SHA256SUMS.txt
           for file in "$ASSETS"/*; do stat -c '%n %s bytes' "$file"; done | tee release/HABIBI-MODEL-ASSETS.txt
 
@@ -80,6 +91,7 @@ jobs:
           python - <<'PY'
           import json, onnx
           from pathlib import Path
+
           root=Path('app/src/main/assets/habibi-f5')
           expected={
             'F5_Preprocess.onnx':({'audio','text_ids','max_duration'},{'noise','rope_cos_q','rope_sin_q','rope_cos_k','rope_sin_k','cat_mel_text','cat_mel_text_drop','ref_signal_len'}),
@@ -91,14 +103,30 @@ jobs:
               have_in={x.name for x in m.graph.input}; have_out={x.name for x in m.graph.output}
               assert need_in <= have_in, (name, need_in-have_in)
               assert need_out <= have_out, (name, need_out-have_out)
+
           cfg=json.loads((root/'config.json').read_text(encoding='utf-8'))
           assert cfg.get('add_blank_char') is False
           assert cfg.get('blank_at_start') is False
           assert cfg.get('blank_at_end') is False
           assert cfg.get('use_eos_bos') is False
-          assert cfg.get('engine_params',{}).get('add_diacritics') is False
-          assert int(cfg.get('engine_params',{}).get('nfe',0)) == 32
-          print('Habibi ONNX contract OK')
+
+          def values_for_key(obj, key):
+              out=[]
+              if isinstance(obj, dict):
+                  for k,v in obj.items():
+                      if k == key:
+                          out.append(v)
+                      out.extend(values_for_key(v, key))
+              elif isinstance(obj, list):
+                  for v in obj:
+                      out.extend(values_for_key(v, key))
+              return out
+
+          diacritics = values_for_key(cfg, 'add_diacritics')
+          nfe = values_for_key(cfg, 'nfe')
+          assert diacritics and all(v is False for v in diacritics), diacritics
+          assert nfe and 32 in [int(v) for v in nfe], nfe
+          print('Habibi ONNX contract OK; add_diacritics=', diacritics, 'nfe=', nfe)
           PY
 
       - name: Build installable debug APK and unsigned release APK
