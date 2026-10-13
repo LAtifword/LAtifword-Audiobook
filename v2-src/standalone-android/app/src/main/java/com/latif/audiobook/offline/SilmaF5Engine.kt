@@ -16,12 +16,18 @@ import java.io.IOException
 import java.nio.IntBuffer
 import java.nio.LongBuffer
 import java.nio.ShortBuffer
-import java.security.MessageDigest
 import java.util.EnumSet
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
-/** Fully local SILMA TTS v1 / F5-TTS ONNX runtime. */
+/**
+ * Fully local Habibi-TTS Specialized MSA / F5-TTS ONNX runtime.
+ *
+ * The historical class name is intentionally retained for this migration so the
+ * service layer does not need a risky type-level rewrite at the same time as the
+ * model swap. The runtime, assets, vocabulary, cache namespace and user-facing
+ * messages are Habibi MSA.
+ */
 class SilmaF5Engine(private val context: Context) : AutoCloseable {
     private val env = OrtEnvironment.getEnvironment()
     private var preprocess: OrtSession? = null
@@ -60,21 +66,19 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
     private data class AssetSpec(
         val path: String,
         val minimumBytes: Long,
-        val exactBytes: Long,
-        val sha256: String? = null,
         val extractToPrivateStorage: Boolean = false,
     )
 
     @Synchronized
     fun load(progress: ((String) -> Unit)? = null) {
         if (preprocess != null && transformer != null && decoder != null) {
-            progress?.invoke("SILMA already ready · $backendName")
+            progress?.invoke("Habibi MSA already ready · $backendName")
             return
         }
 
         val extracted = mutableMapOf<String, File>()
         try {
-            progress?.invoke("Checking embedded SILMA assets…")
+            progress?.invoke("Checking embedded Habibi MSA assets…")
             MODEL_ASSETS.forEach { spec ->
                 validatePackagedAsset(spec)
                 if (spec.extractToPrivateStorage) {
@@ -93,7 +97,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
             }
 
             vocab = loadVocabulary()
-            progress?.invoke("SILMA assets verified. Initializing ONNX Runtime…")
+            progress?.invoke("Habibi MSA assets verified. Initializing ONNX Runtime…")
 
             val backendFailures = mutableListOf<SilmaModelException>()
             for (backend in backendCandidates()) {
@@ -111,7 +115,6 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                     newTransformer = env.createSession(transformerFile.absolutePath, options)
                     newDecoder = env.createSession(decodeFile.absolutePath, options)
 
-                    // Publish a backend only after the complete three-session pipeline succeeds.
                     preprocess = newPreprocess
                     transformer = newTransformer
                     decoder = newDecoder
@@ -123,10 +126,10 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
                     Log.i(
                         TAG,
-                        "SILMA initialized successfully: backend=$backendName threads=$workerThreads " +
+                        "Habibi MSA initialized: backend=$backendName threads=$workerThreads " +
                             "pre=${preFile.length()} transformer=${transformerFile.length()} decoder=${decodeFile.length()}",
                     )
-                    progress?.invoke("SILMA ready · $backendName · $workerThreads threads")
+                    progress?.invoke("Habibi MSA ready · $backendName · $workerThreads threads")
                     return
                 } catch (t: Throwable) {
                     runCatching { newPreprocess?.close() }
@@ -144,12 +147,12 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
             throw SilmaModelException.AllBackendsFailed(backendFailures)
         } catch (e: SilmaModelException) {
             closeSessionsOnly()
-            Log.e(TAG, "SILMA model initialization failed", e)
-            progress?.invoke("SILMA initialization failed: ${e.message}")
+            Log.e(TAG, "Habibi MSA model initialization failed", e)
+            progress?.invoke("Habibi MSA initialization failed: ${e.message}")
             throw e
         } catch (t: Throwable) {
             closeSessionsOnly()
-            Log.e(TAG, "Unexpected SILMA initialization failure", t)
+            Log.e(TAG, "Unexpected Habibi MSA initialization failure", t)
             throw SilmaModelException.OnnxInitializationFailed("unknown", t)
         }
     }
@@ -223,7 +226,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         reference: VoiceReference,
         text: String,
         speed: Float = 1.0f,
-        nfeSteps: Int = 12,
+        nfeSteps: Int = 32,
         cancelled: AtomicBoolean? = null,
         onStep: ((Int, Int) -> Unit)? = null,
     ): ShortArray {
@@ -359,10 +362,10 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
     private fun tensor(result: OrtSession.Result, name: String): OnnxTensor {
         val value: OnnxValue = result.get(name).orElseThrow {
-            IllegalStateException("SILMA ONNX output '$name' is missing")
+            IllegalStateException("Habibi MSA ONNX output '$name' is missing")
         }
         return value as? OnnxTensor
-            ?: error("SILMA ONNX output '$name' is not a tensor")
+            ?: error("Habibi MSA ONNX output '$name' is not a tensor")
     }
 
     private fun extractPcm16(tensor: OnnxTensor): ShortArray {
@@ -396,7 +399,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                 is Float -> floats += v
                 is FloatArray -> for (x in v) floats += x
                 is Array<*> -> v.forEach(::walk)
-                else -> error("Unsupported SILMA audio output type: ${v.javaClass.name}")
+                else -> error("Unsupported Habibi MSA audio output type: ${v.javaClass.name}")
             }
         }
         walk(value)
@@ -409,10 +412,10 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                     .toShort()
             }
         }
-        error("SILMA decoder returned empty audio")
+        error("Habibi MSA decoder returned empty audio")
     }
 
-    private fun validatePackagedAsset(spec: AssetSpec) {
+    private fun validatePackagedAsset(spec: AssetSpec): Long {
         val actual = try {
             context.assets.openFd(spec.path).use { it.length }
         } catch (e: FileNotFoundException) {
@@ -427,10 +430,8 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         if (actual < spec.minimumBytes) {
             throw SilmaModelException.AssetTooSmall(spec.path, actual, spec.minimumBytes)
         }
-        if (actual != spec.exactBytes) {
-            throw SilmaModelException.AssetSizeMismatch(spec.path, actual, spec.exactBytes)
-        }
         Log.i(TAG, "Validated packaged asset ${spec.path}: bytes=$actual")
+        return actual
     }
 
     private fun extractAndValidateAsset(
@@ -438,7 +439,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         progress: ((String) -> Unit)?,
     ): File {
         val name = spec.path.substringAfterLast('/')
-        val outDir = File(context.filesDir, "silma-f5-v3")
+        val outDir = File(context.filesDir, "habibi-f5-v1")
         if (!outDir.exists() && !outDir.mkdirs()) {
             throw SilmaModelException.AssetExtractionFailed(
                 spec.path,
@@ -447,24 +448,22 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
             )
         }
 
+        val packagedLength = validatePackagedAsset(spec)
         val out = File(outDir, name)
-        val packagedLength = spec.exactBytes
         if (out.exists()) {
             try {
                 validateExtractedFile(out, spec, packagedLength)
-                progress?.invoke("Validated cached asset: $name")
+                progress?.invoke("Validated cached Habibi asset: $name")
                 return out
             } catch (t: Throwable) {
-                Log.w(TAG, "Cached SILMA asset invalid; re-extracting ${spec.path}", t)
-                if (!out.delete()) {
-                    Log.w(TAG, "Unable to delete invalid cache ${out.absolutePath}")
-                }
+                Log.w(TAG, "Cached Habibi asset invalid; re-extracting ${spec.path}", t)
+                if (!out.delete()) Log.w(TAG, "Unable to delete invalid cache ${out.absolutePath}")
             }
         }
 
         val temp = File(outDir, "$name.tmp")
         if (temp.exists()) temp.delete()
-        progress?.invoke("Installing local model: $name…")
+        progress?.invoke("Installing local Habibi model: $name…")
         Log.i(TAG, "Extracting ${spec.path} -> ${temp.absolutePath}")
 
         try {
@@ -485,13 +484,9 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                 }
             }
             validateExtractedFile(temp, spec, packagedLength)
-            if (out.exists() && !out.delete()) {
-                throw IOException("Unable to replace ${out.absolutePath}")
-            }
-            if (!temp.renameTo(out)) {
-                throw IOException("Unable to atomically commit ${out.absolutePath}")
-            }
-            Log.i(TAG, "Installed validated asset ${spec.path}: bytes=${out.length()}")
+            if (out.exists() && !out.delete()) throw IOException("Unable to replace ${out.absolutePath}")
+            if (!temp.renameTo(out)) throw IOException("Unable to atomically commit ${out.absolutePath}")
+            Log.i(TAG, "Installed Habibi asset ${spec.path}: bytes=${out.length()}")
             return out
         } catch (e: SilmaModelException) {
             temp.delete()
@@ -521,29 +516,9 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         if (actual < spec.minimumBytes) {
             throw SilmaModelException.AssetTooSmall(spec.path, actual, spec.minimumBytes)
         }
-        if (actual != spec.exactBytes || actual != packagedLength) {
-            throw SilmaModelException.AssetSizeMismatch(spec.path, actual, spec.exactBytes)
+        if (actual != packagedLength) {
+            throw SilmaModelException.AssetSizeMismatch(spec.path, actual, packagedLength)
         }
-        if (VERIFY_ASSET_HASHES && spec.sha256 != null) {
-            val actualHash = sha256(file)
-            if (!actualHash.equals(spec.sha256, ignoreCase = true)) {
-                throw SilmaModelException.AssetHashMismatch(spec.path, actualHash, spec.sha256)
-            }
-        }
-    }
-
-    private fun sha256(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        file.inputStream().use { input ->
-            val buffer = ByteArray(1024 * 1024)
-            while (true) {
-                val read = input.read(buffer)
-                if (read < 0) break
-                if (read == 0) continue
-                digest.update(buffer, 0, read)
-            }
-        }
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun loadVocabulary(): Map<String, Int> {
@@ -569,12 +544,12 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         } catch (t: Throwable) {
             throw SilmaModelException.AssetExtractionFailed(
                 VOCAB_ASSET,
-                File(context.filesDir, "silma-f5-v3/vocab.txt"),
+                File(context.filesDir, "habibi-f5-v1/vocab.txt"),
                 t,
             )
         }.also { loaded ->
-            require(loaded.isNotEmpty()) { "SILMA vocabulary is empty" }
-            Log.i(TAG, "Loaded SILMA vocabulary entries=${loaded.size}")
+            require(loaded.isNotEmpty()) { "Habibi MSA vocabulary is empty" }
+            Log.i(TAG, "Loaded Habibi MSA vocabulary entries=${loaded.size}")
         }
     }
 
@@ -598,27 +573,26 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
     class GenerationCancelled : RuntimeException()
 
     companion object {
-        private const val TAG = "SilmaF5Engine"
-        private const val VERIFY_ASSET_HASHES = false
+        private const val TAG = "HabibiF5Engine"
 
         const val MIN_STEPS = 8
         const val MAX_STEPS = 32
-        const val DEFAULT_REFERENCE_ASSET = "silma-f5/default_ref.wav"
+        const val DEFAULT_REFERENCE_ASSET = "habibi-f5/default_ref.wav"
         const val DEFAULT_REFERENCE_TEXT =
             "ويدقق النظر في القرآن الكريم وسائر الكتب السماوية ويتبع مسالك الرسل العظام عليهم الصلاة والسلام."
 
-        private const val PREPROCESS_ASSET = "silma-f5/F5_Preprocess.onnx"
-        private const val TRANSFORMER_ASSET = "silma-f5/model.onnx"
-        private const val DECODER_ASSET = "silma-f5/F5_Decode.onnx"
-        private const val VOCAB_ASSET = "silma-f5/vocab.txt"
+        private const val PREPROCESS_ASSET = "habibi-f5/F5_Preprocess.onnx"
+        private const val TRANSFORMER_ASSET = "habibi-f5/model.onnx"
+        private const val DECODER_ASSET = "habibi-f5/F5_Decode.onnx"
+        private const val VOCAB_ASSET = "habibi-f5/vocab.txt"
 
         private val MODEL_ASSETS = listOf(
-            AssetSpec(PREPROCESS_ASSET, 1_000_000L, 73_904_440L, extractToPrivateStorage = true),
-            AssetSpec(TRANSFORMER_ASSET, 100_000_000L, 612_437_669L, extractToPrivateStorage = true),
-            AssetSpec(DECODER_ASSET, 1_000_000L, 62_546_929L, extractToPrivateStorage = true),
-            AssetSpec("silma-f5/config.json", 1_000L, 156_367L),
-            AssetSpec(DEFAULT_REFERENCE_ASSET, 10_000L, 372_680L),
-            AssetSpec(VOCAB_ASSET, 1_000L, 36_357L),
+            AssetSpec(PREPROCESS_ASSET, 1_000_000L, extractToPrivateStorage = true),
+            AssetSpec(TRANSFORMER_ASSET, 500_000_000L, extractToPrivateStorage = true),
+            AssetSpec(DECODER_ASSET, 1_000_000L, extractToPrivateStorage = true),
+            AssetSpec("habibi-f5/config.json", 1_000L),
+            AssetSpec(DEFAULT_REFERENCE_ASSET, 10_000L),
+            AssetSpec(VOCAB_ASSET, 5_000L),
         )
     }
 }

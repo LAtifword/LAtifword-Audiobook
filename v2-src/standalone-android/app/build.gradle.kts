@@ -11,8 +11,8 @@ android {
         applicationId = "com.latif.audiobook.offline"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "3.3.0-integrated"
+        versionCode = 12
+        versionName = "3.4.0-habibi-msa"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -68,31 +68,35 @@ android {
     }
 }
 
-val requiredSilmaAssets = mapOf(
-    "F5_Preprocess.onnx" to 73_904_440L,
-    "model.onnx" to 612_437_669L,
-    "F5_Decode.onnx" to 62_546_929L,
-    "config.json" to 156_367L,
-    "default_ref.wav" to 372_680L,
-    "vocab.txt" to 36_357L,
+// The Habibi MSA ONNX export is pinned and checksummed by CI. Runtime validation
+// verifies that the complete uncompressed packaged files were atomically copied
+// before ONNX Runtime opens them. Minimum sizes catch Git-LFS/Xet pointer files
+// and interrupted downloads without hard-coding upstream byte lengths.
+val requiredHabibiAssets = mapOf(
+    "F5_Preprocess.onnx" to 1_000_000L,
+    "model.onnx" to 500_000_000L,
+    "F5_Decode.onnx" to 1_000_000L,
+    "config.json" to 1_000L,
+    "default_ref.wav" to 10_000L,
+    "vocab.txt" to 5_000L,
 )
 
-val verifySilmaAssets by tasks.registering {
+val verifyHabibiAssets by tasks.registering {
     group = "verification"
-    description = "Fails release builds when an embedded SILMA asset is absent or truncated."
+    description = "Fails release builds when an embedded Habibi MSA asset is absent or truncated."
     doLast {
-        requiredSilmaAssets.forEach { (name, expectedBytes) ->
-            val asset = file("src/main/assets/silma-f5/$name")
-            check(asset.isFile) { "Required SILMA asset is missing: ${asset.path}" }
-            check(asset.length() == expectedBytes) {
-                "SILMA asset $name has ${asset.length()} bytes; expected $expectedBytes"
+        requiredHabibiAssets.forEach { (name, minimumBytes) ->
+            val asset = file("src/main/assets/habibi-f5/$name")
+            check(asset.isFile) { "Required Habibi MSA asset is missing: ${asset.path}" }
+            check(asset.length() >= minimumBytes) {
+                "Habibi MSA asset $name has ${asset.length()} bytes; minimum expected is $minimumBytes"
             }
         }
     }
 }
 
 tasks.matching { it.name == "preReleaseBuild" }.configureEach {
-    dependsOn(verifySilmaAssets)
+    dependsOn(verifyHabibiAssets)
 }
 
 dependencies {
