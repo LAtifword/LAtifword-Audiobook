@@ -1,0 +1,111 @@
+name: Diagnose Habibi preprocess
+
+on:
+  push:
+    branches: [habibi-runtime-fix]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODEL_REV: 78b2d00397fc1bc8064d8e4d849e794fa8325245
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Download exact preprocess assets
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/habibi
+          BASE="https://huggingface.co/OpenVoiceOS/phoonnx-f5tts/resolve/$MODEL_REV/habibi-tts-msa"
+          curl -L --fail --retry 5 -o /tmp/habibi/F5_Preprocess.onnx "$BASE/F5_Preprocess.onnx?download=true"
+          curl -L --fail --retry 5 -o /tmp/habibi/config.json "$BASE/config.json?download=true"
+          curl -L --fail --retry 5 -o /tmp/habibi/vocab.txt "$BASE/vocab.txt?download=true"
+          curl -L --fail --retry 5 -o /tmp/habibi/default_ref.wav 'https://huggingface.co/spaces/silma-ai/silma-tts-v1-demo/resolve/main/ar.ref.24k.wav?download=true'
+          test "$(stat -c%s /tmp/habibi/F5_Preprocess.onnx)" -eq 68788536
+          test "$(stat -c%s /tmp/habibi/config.json)" -eq 46205
+          test "$(stat -c%s /tmp/habibi/vocab.txt)" -eq 11698
+          test "$(stat -c%s /tmp/habibi/default_ref.wav)" -eq 372680
+      - name: Probe tokenizer and 4096-frame boundary
+        run: |
+          set -euxo pipefail
+          python -m pip install --quiet 'onnxruntime>=1.20,<2' numpy
+          python - <<'PY'
+          import json, wave
+          from pathlib import Path
+          import numpy as np
+          import onnxruntime as ort
+
+          root = Path('/tmp/habibi')
+          cfg = json.loads((root/'config.json').read_text(encoding='utf-8'))
+          mapping = {k:int(v) for k,v in cfg['phoneme_id_map'].items()}
+          vocab_lines = (root/'vocab.txt').read_text(encoding='utf-8').splitlines()
+          print('config num_symbols=', cfg.get('num_symbols'))
+          print('config map entries=', len(mapping), 'min/max=', min(mapping.values()), max(mapping.values()))
+          print('vocab physical lines=', len(vocab_lines))
+          assert cfg.get('num_symbols') == 2666
+          assert len(mapping) == 2666
+          assert max(mapping.values()) == 2665
+          assert len(vocab_lines) == 2666
+          mismatches = [(tok, idx, vocab_lines[idx]) for tok,idx in mapping.items() if idx >= len(vocab_lines) or vocab_lines[idx] != tok]
+          print('vocab/config mismatches=', len(mismatches), mismatches[:5])
+          assert not mismatches
+
+          ref_text = 'ويدقق النظر في القرآن الكريم وسائر الكتب السماوية ويتبع مسالك الرسل العظام عليهم الصلاة والسلام. '
+          gen_text = 'هذا اختبار قصير لصوت عربي واضح داخل التطبيق.'
+          combined = ref_text + gen_text
+          ids_cfg = [mapping[c] for c in combined if c in mapping]
+          ids_lines = []
+          line_map = {token:i for i, token in enumerate(vocab_lines) if token}
+          for c in combined:
+              if c in line_map:
+                  ids_lines.append(line_map[c])
+          print('short IDs cfg len/min/max=', len(ids_cfg), min(ids_cfg), max(ids_cfg))
+          print('short IDs line len/min/max=', len(ids_lines), min(ids_lines), max(ids_lines))
+          assert ids_cfg == ids_lines
+          assert max(ids_cfg) <= 2665
+
+          with wave.open(str(root/'default_ref.wav'), 'rb') as w:
+              print('wav=', w.getframerate(), 'Hz', w.getnchannels(), 'ch', w.getsampwidth(), 'bytes/sample', w.getnframes(), 'frames')
+              assert w.getframerate() == 24000 and w.getnchannels() == 1 and w.getsampwidth() == 2
+              audio = np.frombuffer(w.readframes(w.getnframes()), dtype='<i2').copy().reshape(1,1,-1)
+
+          session = ort.InferenceSession(str(root/'F5_Preprocess.onnx'), providers=['CPUExecutionProvider'])
+          print('inputs=', [(x.name,x.type,x.shape) for x in session.get_inputs()])
+          print('outputs=', [(x.name,x.type,x.shape) for x in session.get_outputs()])
+          text_ids = np.asarray(ids_cfg, dtype=np.int32).reshape(1,-1)
+
+          # Android v3.4 estimator, reproduced exactly for a short phrase.
+          ref_bytes = max(1, len(ref_text.encode('utf-8')))
+          gen_bytes = len(gen_text.encode('utf-8'))
+          ref_frames = audio.shape[-1] // 256 + 1
+          estimated = ref_frames + int((ref_frames / ref_bytes) * gen_bytes / 0.90) + 12
+          print('android short estimate=', estimated, 'ref_frames=', ref_frames, 'ref_bytes=', ref_bytes, 'gen_bytes=', gen_bytes)
+
+          def probe(duration):
+              try:
+                  out = session.run(None, {
+                      'audio': audio,
+                      'text_ids': text_ids,
+                      'max_duration': np.asarray([duration], dtype=np.int64),
+                  })
+                  shapes = [np.asarray(x).shape for x in out]
+                  print(f'PROBE duration={duration}: OK shapes={shapes}')
+                  return True, ''
+              except Exception as e:
+                  print(f'PROBE duration={duration}: FAIL {type(e).__name__}: {e}')
+                  return False, str(e)
+
+          short_ok, short_err = probe(estimated)
+          assert short_ok, short_err
+          results = {}
+          for duration in (1500, 3500, 4095, 4096, 4097, 4200):
+              results[duration] = probe(duration)
+          print('boundary summary=', {k:v[0] for k,v in results.items()})
+          PY
