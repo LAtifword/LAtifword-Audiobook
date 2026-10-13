@@ -20,7 +20,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-/** Foreground audiobook renderer for LATIF Voice Studio v3.4 Habibi MSA. */
+/** Foreground audiobook renderer for LATIF Voice Studio v3.3 Author Narrator. */
 class AudiobookService : Service() {
     private val cancelled = AtomicBoolean(false)
     private val serviceJob = SupervisorJob()
@@ -64,7 +64,7 @@ class AudiobookService : Service() {
 
         running = true
         cancelled.set(false)
-        startForeground(NOTIFICATION_ID, notification("Preparing Habibi MSA Author Narrator…", 0, true))
+        startForeground(NOTIFICATION_ID, notification("Preparing SILMA Author Narrator…", 0, true))
         renderJob = serviceScope.launch {
             runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
             runJob(uri, rawText, title, displayName, previewOnly, referenceUri, referenceText)
@@ -100,9 +100,10 @@ class AudiobookService : Service() {
             require(text.length >= 20) { "The selected book contains no readable text." }
 
             val chunkChars = chunkSizeFor(nfeSteps)
-            sendProgress(2, "Building semantic sections · $chunkChars chars target…")
-            val semanticChunks = BookParser.splitForNarration(text, chunkChars)
-            require(semanticChunks.isNotEmpty()) { "No narration sections were created." }
+            sendProgress(2, "Building author-narrator sections · $chunkChars chars target…")
+            val allChunks = BookParser.splitForNarration(text, chunkChars)
+            require(allChunks.isNotEmpty()) { "No narration sections were created." }
+            val chunks = if (previewOnly) listOf(allChunks.first()) else allChunks
 
             val startup = SilmaStartupController(this)
             engine = startup.load { state ->
@@ -114,10 +115,10 @@ class AudiobookService : Service() {
                     }
                     is SilmaStartupState.Ready -> sendProgress(
                         4,
-                        "Habibi MSA ready · ${state.backend} · ${state.workerThreads} threads · startup ${state.elapsedMs} ms",
+                        "SILMA ready · ${state.backend} · ${state.workerThreads} threads · startup ${state.elapsedMs} ms",
                     )
                     is SilmaStartupState.Failed -> sendProgress(4, state.message)
-                    SilmaStartupState.Cancelled -> sendProgress(4, "Habibi MSA startup cancelled")
+                    SilmaStartupState.Cancelled -> sendProgress(4, "SILMA startup cancelled")
                 }
             }
 
@@ -130,17 +131,6 @@ class AudiobookService : Service() {
                 engine.builtInReference()
             }
 
-            // DakeQQ's Habibi/F5 preprocess export has a fixed 4096-frame positional
-            // table. max_duration=4096 is valid; 4097 reproduces the Gather idx=4096
-            // crash. Plan against the actual reference clip/transcript and keep headroom.
-            val frameSafeChunks = buildFrameSafeChunks(semanticChunks, reference, speed)
-            require(frameSafeChunks.isNotEmpty()) { "No frame-safe narration sections were created." }
-            val chunks = if (previewOnly) listOf(frameSafeChunks.first()) else frameSafeChunks
-            sendProgress(
-                4,
-                "Habibi frame-safe plan · ${chunks.size} sections · ≤$HABIBI_SAFE_MAX_FRAMES/$HABIBI_MODEL_MAX_FRAMES frames",
-            )
-
             val outputTitle = if (previewOnly) "$title — Author Narrator preview" else title
             val metadata = AudiobookMetadata(
                 title = outputTitle,
@@ -148,7 +138,7 @@ class AudiobookService : Service() {
                 narrator = NARRATOR_NAME,
                 year = 2026,
                 genre = "Audiobook",
-                comment = "Generated locally with LATIF Habibi MSA F5 Author Narrator",
+                comment = "Generated locally with LATIF SILMA F5 Author Narrator",
             )
             val activeWriter = M4aWriter(
                 context = this,
@@ -176,11 +166,6 @@ class AudiobookService : Service() {
                 val clean = ArabicText.prepareForNarration(chunk)
                 if (clean.isBlank()) return@forEachIndexed
 
-                val predictedFrames = estimateHabibiFrames(reference, clean, speed)
-                check(predictedFrames <= HABIBI_SAFE_MAX_FRAMES) {
-                    "Habibi section planner invariant failed: predicted $predictedFrames frames"
-                }
-
                 val sectionStartMs = activeWriter.currentDurationMs()
                 val chunkStart = SystemClock.elapsedRealtime()
                 val audio = engine.synthesize(
@@ -194,7 +179,7 @@ class AudiobookService : Service() {
                     val percent = 5 + (unit * 92.0).roundToInt().coerceIn(0, 92)
                     sendProgress(
                         percent,
-                        "Habibi ${index + 1}/${chunks.size} · refinement $step/$stepCount · $predictedFrames frames · ${engine.backendName}",
+                        "SILMA ${index + 1}/${chunks.size} · refinement $step/$stepCount · Author Narrator · ${engine.backendName}",
                     )
                 }
 
@@ -289,7 +274,7 @@ class AudiobookService : Service() {
             val message = modelErrorSummary(e)
             Log.e(TAG, message, e)
             sendFailed(message)
-            updateNotification("Habibi model error", 0, false)
+            updateNotification("SILMA model error", 0, false)
         } catch (t: Throwable) {
             writer?.abort()
             Log.e(TAG, "Audiobook generation failed", t)
@@ -317,8 +302,9 @@ class AudiobookService : Service() {
     }
 
     /**
-     * First pass preserves sentence boundaries. A second pass below uses the actual
-     * reference clip/transcript to respect Habibi's fixed 4096 acoustic-frame table.
+     * Larger semantic sections amortize F5 reference and encoder overhead.
+     * BookParser still splits at sentence boundaries and hard-wraps only when
+     * a sentence exceeds the limit.
      */
     private fun chunkSizeFor(steps: Int): Int = when {
         steps <= 8 -> 360
@@ -326,81 +312,6 @@ class AudiobookService : Service() {
         steps <= 16 -> 500
         steps <= 24 -> 560
         else -> 600
-    }
-
-    private fun buildFrameSafeChunks(
-        semanticChunks: List<String>,
-        reference: SilmaF5Engine.VoiceReference,
-        speed: Float,
-    ): List<String> {
-        val out = mutableListOf<String>()
-        semanticChunks.forEach { splitFrameSafe(it, reference, speed, out, 0) }
-        return out
-    }
-
-    private fun splitFrameSafe(
-        raw: String,
-        reference: SilmaF5Engine.VoiceReference,
-        speed: Float,
-        out: MutableList<String>,
-        depth: Int,
-    ) {
-        val clean = ArabicText.prepareForNarration(raw).trim()
-        if (clean.isBlank()) return
-
-        val predicted = estimateHabibiFrames(reference, clean, speed)
-        if (predicted <= HABIBI_SAFE_MAX_FRAMES) {
-            out += clean
-            return
-        }
-
-        require(depth < 16) { "Unable to fit narration section inside Habibi frame budget." }
-        require(clean.length > 1) {
-            "Reference voice/transcript requires more than $HABIBI_SAFE_MAX_FRAMES frames before narration text."
-        }
-
-        val ratio = (HABIBI_SAFE_MAX_FRAMES.toDouble() / predicted.toDouble() * 0.90)
-            .coerceIn(0.05, 0.90)
-        val upper = (clean.length - 1).coerceAtLeast(1)
-        val targetChars = (clean.length * ratio).toInt().coerceAtLeast(1).coerceAtMost(upper)
-        val pieces = BookParser.splitForNarration(clean, targetChars)
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-
-        if (pieces.size <= 1 || pieces.any { it.length >= clean.length }) {
-            val splitAt = targetChars.coerceIn(1, clean.length - 1)
-            val left = clean.substring(0, splitAt).trim()
-            val right = clean.substring(splitAt).trim()
-            require(left.isNotBlank() && right.isNotBlank()) {
-                "Unable to split narration section inside Habibi frame budget."
-            }
-            splitFrameSafe(left, reference, speed, out, depth + 1)
-            splitFrameSafe(right, reference, speed, out, depth + 1)
-            return
-        }
-
-        Log.i(
-            TAG,
-            "Habibi frame split: predicted=$predicted frames chars=${clean.length} -> ${pieces.size} pieces targetChars=$targetChars",
-        )
-        pieces.forEach { splitFrameSafe(it, reference, speed, out, depth + 1) }
-    }
-
-    /** Mirrors the exact estimator used by SilmaF5Engine v3.4. */
-    private fun estimateHabibiFrames(
-        reference: SilmaF5Engine.VoiceReference,
-        generationText: String,
-        speed: Float,
-    ): Long {
-        val trimmedRef = reference.transcript.trim()
-        val refText = if (trimmedRef.endsWith(" ")) trimmedRef else "$trimmedRef "
-        val refTextBytes = refText.toByteArray(Charsets.UTF_8).size.coerceAtLeast(1)
-        val genBytes = generationText.toByteArray(Charsets.UTF_8).size
-        val refFrames = reference.samples.size / HABIBI_HOP_LENGTH + 1
-        val rate = if (speed <= 0f) 1.0 else speed.toDouble()
-        return refFrames.toLong() +
-            ((refFrames.toDouble() / refTextBytes.toDouble()) * genBytes.toDouble() / rate).toLong() +
-            HABIBI_TAIL_PADDING_FRAMES
     }
 
     private fun formatDuration(milliseconds: Long): String {
@@ -453,7 +364,7 @@ class AudiobookService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("LATIF Voice Studio 3.4 · Habibi MSA")
+            .setContentTitle("LATIF Voice Studio 3.3 · Author Narrator")
             .setContentText(message)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pending)
@@ -498,13 +409,10 @@ class AudiobookService : Service() {
         const val KEY_LAST_BACKEND = "lastBackend"
         const val KEY_LAST_NFE_STEPS = "lastNfeSteps"
         const val KEY_LAST_FIRST_SECTION_MS = "lastFirstSectionMs"
-        const val DEFAULT_NFE_STEPS = 32
+        // 24 steps retain strong F5 quality while reducing denoising work by 25%.
+        const val DEFAULT_NFE_STEPS = 24
         const val AUTHOR_SPEED = 0.90f
         const val NARRATOR_NAME = "LATIF Author Narrator"
-        private const val HABIBI_MODEL_MAX_FRAMES = 4096L
-        private const val HABIBI_SAFE_MAX_FRAMES = 3900L
-        private const val HABIBI_HOP_LENGTH = 256
-        private const val HABIBI_TAIL_PADDING_FRAMES = 12L
         private const val CHANNEL_ID = "latif_audiobook_render"
         private const val NOTIFICATION_ID = 7004
     }
