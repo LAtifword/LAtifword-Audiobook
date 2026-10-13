@@ -26,7 +26,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 
-/** Native UI for the deterministic v3.4 Habibi MSA Author Narrator pipeline. */
+/** Native UI for the deterministic v3.3 Author Narrator pipeline. */
 class MainActivityV3 : Activity() {
     private var bookUri: Uri? = null
     private var bookName: String? = null
@@ -144,7 +144,7 @@ class MainActivityV3 : Activity() {
             gravity = Gravity.START
         })
         root.addView(TextView(this).apply {
-            text = "3.4 · HABIBI MSA · RUNTIME FIX TEST"
+            text = "3.3 · AUTHOR NARRATOR · VERIFIED LOCAL SILMA PIPELINE"
             setTextColor(saffron)
             textSize = 12f
             setPadding(0, dp(4), 0, dp(18))
@@ -152,7 +152,7 @@ class MainActivityV3 : Activity() {
 
         root.addView(panel().apply {
             addView(title("إعداد الراوي ثابت ومقصود"))
-            addView(body("LATIF Author Narrator · Literary · سرعة 0.90× · 32 خطوة F5. نموذج Habibi MSA محلي بالكامل."))
+            addView(body("LATIF Author Narrator · Literary · سرعة 0.90× · المسار المتوازن 24 خطوة F5. لا توجد إعدادات وهمية أو استنساخ صوت مخفي في هذا الإصدار."))
             addView(body("المحرك يجرب XNNPACK ثم NNAPI FP16 ثم NNAPI ثم ORT CPU، ويعرض الـ backend الفعلي و ETA / RTF أثناء العمل."))
             addView(body("الجهاز: ${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}"))
         })
@@ -165,7 +165,7 @@ class MainActivityV3 : Activity() {
         devPanel = panel().apply {
             visibility = View.GONE
             addView(title("لوحة التطوير · مراقبة حية"))
-            addView(body("Habibi MSA · الراوي المرجعي ثابت لكل الكتب. لا يوجد تدريب داخل الهاتف. يخطط التطبيق المقاطع ضمن حد الإطارات الآمن قبل تشغيل ONNX."))
+            addView(body("الصوت ثابت لكل الكتب: ${VoiceReferenceConfig.LABEL_AR} · ${VoiceReferenceConfig.SPEAKER} · مرجع مضمّن. لا يوجد تدريب داخل الهاتف؛ ملفات الصوت المرجعية الخارجية لا تغيّر الهوية إلا إذا دُمجت صراحة في إعدادات البناء."))
             addView(Switch(this@MainActivityV3).apply {
                 text = "وضع التفاصيل العالية"
                 setTextColor(ivory)
@@ -205,23 +205,22 @@ class MainActivityV3 : Activity() {
             textDirection = View.TEXT_DIRECTION_RTL
         }
         root.addView(textInput, params(top = 10))
-        root.addView(body("إذا لصقت نصاً من 20 حرفاً أو أكثر فسيُستخدم النص الملصق عمداً، حتى لو سبق أن اخترت كتاباً. اختيار كتاب جديد يمسح النص الملصق القديم."))
 
         root.addView(kicker("02 / الصوت المرجعي"))
         root.addView(panel().apply {
             addView(title("مرجع الصوت للـ voice conditioning"))
-            addView(body("استخدم المرجع المضمّن، أو اختر ملف RIFF/WAV PCM حقيقياً بصوت تملك حق استخدامه مع النص الحرفي المنطوق. يفضّل 3–15 ثانية، صوت واحد، دون موسيقى أو صدى."))
+            addView(body("استخدم المرجع المضمّن، أو اختر WAV نظيفاً بصوت تملك حق استخدامه مع النص الحرفي المنطوق. يفضّل 3–15 ثانية، صوت واحد، دون موسيقى أو صدى."))
             addView(button("استخدام المرجع المضمّن", false).apply {
                 setOnClickListener {
                     referenceUri = null
                     referenceName = null
-                    referenceInfo.text = "المرجع: Habibi MSA · ${VoiceReferenceConfig.SPEAKER} · مضمّن"
+                    referenceInfo.text = "المرجع: SILMA Nabra-82M · ${VoiceReferenceConfig.SPEAKER} · مضمّن"
                 }
             })
             addView(button("اختيار WAV لمرجع صوتي مخصص", false).apply {
                 setOnClickListener { chooseReference() }
             }, params(top = 8))
-            referenceInfo = body("المرجع: Habibi MSA · ${VoiceReferenceConfig.SPEAKER} · مضمّن")
+            referenceInfo = body("المرجع: SILMA Nabra-82M · ${VoiceReferenceConfig.SPEAKER} · مضمّن")
             addView(referenceInfo)
             referenceTranscript = field("النص الحرفي للمرجع الصوتي", false).apply {
                 minLines = 2
@@ -235,9 +234,9 @@ class MainActivityV3 : Activity() {
         root.addView(kicker("03 / خط الإنتاج"))
         root.addView(panel().apply {
             addView(title("Offline author-grade path"))
-            addView(body("Habibi MSA F5 ONNX · 24 kHz · AAC-LC 128 kbps M4A · تقسيم تكيفي آمن تحت 3900/4096 إطار لكل استدعاء."))
-            addView(body("بعد كل مقطع، يحفظ التطبيق توقيت البداية والنهاية الحقيقيين وينشئ ملف .chapters.json للتنقل، ثم يدمج المقاطع في كتاب واحد."))
-            addView(body("4096 هو حد زمني صوتي للاستدعاء الواحد في هذا التصدير، وليس حد الكتاب أو عدد الكلمات. الكتاب الكامل يُولد كسلسلة مقاطع آمنة."))
+            addView(body("SILMA F5 ONNX · 24 kHz · AAC-LC 128 kbps M4A · كتابة مؤقتة آمنة ثم نشر نهائي."))
+            addView(body("بعد كل مقطع، يحفظ التطبيق توقيت البداية والنهاية الحقيقيين وينشئ ملف .chapters.json للتنقل، بدون تقدير زمني من طول النص."))
+            addView(body("ملفات الموديل تتحقق من أحجامها قبل تشغيل ONNX، وأي backend يفشل يُغلق بالكامل قبل تجربة البديل."))
         })
 
         root.addView(kicker("04 / الاختبار ثم التوليد"))
@@ -266,7 +265,7 @@ class MainActivityV3 : Activity() {
             progressTintList = android.content.res.ColorStateList.valueOf(saffron)
         }
         root.addView(progress, params(top = 12))
-        status = body("جاهز. اختبر مقطعاً واحداً أولاً. أثناء التوليد سيظهر backend الفعلي، عدد الإطارات، refinement، RTF ووقت الإنجاز المتوقع.")
+        status = body("جاهز. اختبر مقطعاً واحداً أولاً. أثناء التوليد سيظهر backend الفعلي، refinement، RTF ووقت الإنجاز المتوقع.")
         root.addView(status)
 
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -283,7 +282,7 @@ class MainActivityV3 : Activity() {
         root.addView(row, params(top = 10))
 
         root.addView(TextView(this).apply {
-            text = "OFFLINE · HABIBI MSA F5 · AUTHOR 0.90x · 32 NFE · FRAME-SAFE 3900/4096 · v3.4 FIX"
+            text = "OFFLINE · SILMA F5 · AUTHOR 0.90x · 24 NFE · XNNPACK / NNAPI / CPU · MEDIA3 · v3.3"
             setTextColor(Color.rgb(90, 94, 110))
             textSize = 9.5f
             typeface = Typeface.MONOSPACE
@@ -319,10 +318,7 @@ class MainActivityV3 : Activity() {
             Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
                 type = "audio/wav"
-                putExtra(
-                    Intent.EXTRA_MIME_TYPES,
-                    arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"),
-                )
+                putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("audio/wav", "audio/x-wav", "audio/*"))
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
             },
             PICK_REFERENCE,
@@ -338,71 +334,35 @@ class MainActivityV3 : Activity() {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         if (requestCode == PICK_REFERENCE) {
-            if (!isRiffWave(uri)) {
-                referenceUri = null
-                referenceName = null
-                referenceInfo.text = "المرجع المخصص مرفوض: المطلوب ملف RIFF/WAV PCM حقيقي"
-                status.text = "الملف المختار ليس RIFF/WAV حقيقياً. لم يتم استخدامه."
-                Toast.makeText(this, "المرجع يجب أن يكون RIFF/WAV حقيقياً، وليس MP3 أو ملفاً معاد تسميته.", Toast.LENGTH_LONG).show()
-                return
-            }
             referenceUri = uri
             referenceName = queryName(uri)
-            referenceInfo.text = "المرجع المخصص: ${referenceName ?: "WAV"} · RIFF/WAVE متحقق · أدخل النص الحرفي"
-            status.text = "تم التحقق من حاوية WAV. أدخل النص الحرفي ثم اختبر مقطعاً."
+            referenceInfo.text = "المرجع المخصص: ${referenceName ?: "WAV"} · أدخل النص الحرفي قبل التوليد"
+            status.text = "تم اختيار مرجع صوتي مخصص. أدخل نصه الحرفي ثم اختبر مقطعاً."
         } else {
             bookUri = uri
             bookName = queryName(uri)
-            textInput.text.clear()
             val base = bookName?.substringBeforeLast('.').orEmpty()
             if (titleInput.text.isBlank()) titleInput.setText(base)
             bookInfo.text = "الكتاب: ${bookName ?: "ملف مختار"}"
-            status.text = "تم اختيار الكتاب ومسح أي نص ملصق قديم. اختبر مقطعاً واحداً قبل التوليد الكامل."
+            status.text = "تم اختيار الكتاب. اختبر مقطعاً واحداً قبل التوليد الكامل."
         }
     }
 
-    private fun isRiffWave(uri: Uri): Boolean {
-        return runCatching {
-            contentResolver.openInputStream(uri)?.use { input ->
-                val header = ByteArray(12)
-                var offset = 0
-                while (offset < header.size) {
-                    val read = input.read(header, offset, header.size - offset)
-                    if (read <= 0) break
-                    offset += read
-                }
-                offset == 12 &&
-                    header[0] == 'R'.code.toByte() &&
-                    header[1] == 'I'.code.toByte() &&
-                    header[2] == 'F'.code.toByte() &&
-                    header[3] == 'F'.code.toByte() &&
-                    header[8] == 'W'.code.toByte() &&
-                    header[9] == 'A'.code.toByte() &&
-                    header[10] == 'V'.code.toByte() &&
-                    header[11] == 'E'.code.toByte()
-            } ?: false
-        }.getOrDefault(false)
-    }
-
     private fun startGeneration(previewOnly: Boolean) {
-        val pasted = textInput.text.toString().trim()
-        val usePastedText = pasted.length >= 20
-        if (!usePastedText && bookUri == null) {
-            Toast.makeText(this, "اختر كتاباً أو الصق نصاً من 20 حرفاً على الأقل.", Toast.LENGTH_SHORT).show()
+        val pasted = if (bookUri == null) textInput.text.toString().trim() else ""
+        if (bookUri == null && pasted.length < 20) {
+            Toast.makeText(this, "اختر كتاباً أو الصق نصاً أولاً.", Toast.LENGTH_SHORT).show()
             return
         }
 
         val bookTitle = titleInput.text.toString().trim().ifBlank {
-            if (usePastedText) "LATIF Text Preview" else bookName?.substringBeforeLast('.') ?: "LATIF Audiobook"
+            bookName?.substringBeforeLast('.') ?: "LATIF Audiobook"
         }
         val work = Intent(this, AudiobookService::class.java).apply {
-            if (usePastedText) {
-                putExtra(AudiobookService.EXTRA_RAW_TEXT, pasted)
-            } else {
-                requireNotNull(bookUri).let { putExtra(AudiobookService.EXTRA_URI, it.toString()) }
-            }
+            bookUri?.let { putExtra(AudiobookService.EXTRA_URI, it.toString()) }
+                ?: putExtra(AudiobookService.EXTRA_RAW_TEXT, pasted)
             putExtra(AudiobookService.EXTRA_TITLE, bookTitle)
-            putExtra(AudiobookService.EXTRA_DISPLAY_NAME, if (usePastedText) null as String? else bookName)
+            putExtra(AudiobookService.EXTRA_DISPLAY_NAME, bookName)
             putExtra(AudiobookService.EXTRA_PREVIEW_ONLY, previewOnly)
             referenceUri?.let { putExtra(AudiobookService.EXTRA_REFERENCE_URI, it.toString()) }
             if (referenceUri != null) {
@@ -412,13 +372,13 @@ class MainActivityV3 : Activity() {
         progress.visibility = View.VISIBLE
         progress.progress = 0
         status.text = if (previewOnly) {
-            "بدء اختبار Habibi MSA · 0.90× · 32 خطوة…"
+            "بدء اختبار Author Narrator · 0.90× · 24 خطوة…"
         } else {
-            "بدء الكتاب الكامل · Habibi MSA · 0.90× · 32 خطوة…"
+            "بدء الكتاب الكامل · Author Narrator · 0.90× · 24 خطوة…"
         }
-        modelLine.text = "النموذج: بدء التشغيل · تحميل Habibi MSA والتحقق من المرجع الصوتي"
-        chunkLine.text = "المقطع: تجهيز قائمة المقاطع الآمنة…"
-        devLog.text = "[start] ${if (previewOnly) "preview" else "full audiobook"} · source=${if (usePastedText) "pasted-text" else "book"} · voice=${VoiceReferenceConfig.ID}"
+        modelLine.text = "النموذج: بدء التشغيل · تحميل SILMA والتحقق من المرجع الصوتي"
+        chunkLine.text = "المقطع: تجهيز قائمة المقاطع…"
+        devLog.text = "[start] ${if (previewOnly) "preview" else "full audiobook"} · voice=${VoiceReferenceConfig.ID}"
         preview.isEnabled = false
         generate.isEnabled = false
         cancel.visibility = View.VISIBLE
@@ -468,7 +428,7 @@ class MainActivityV3 : Activity() {
 
     private fun updateDeveloperMonitor(message: String, percent: Int) {
         if (!::devPanel.isInitialized) return
-        val chunk = Regex("Habibi\\s+(\\d+)/(\\d+)").find(message)
+        val chunk = Regex("SILMA\\s+(\\d+)/(\\d+)").find(message)
         val refinement = Regex("refinement\\s+(\\d+)/(\\d+)").find(message)
         chunkLine.text = if (chunk != null) {
             val refinementText = refinement?.let { " · refinement ${it.groupValues[1]}/${it.groupValues[2]}" }.orEmpty()
@@ -476,7 +436,7 @@ class MainActivityV3 : Activity() {
         } else {
             "المقطع: $message · إجمالي $percent%"
         }
-        modelLine.text = "النموذج: ${if (message.contains("Habibi")) message else "Habibi MSA F5 · المرجع جاهز"}"
+        modelLine.text = "النموذج: ${if (message.contains("SILMA")) message else "SILMA F5 · المرجع الثابت جاهز"}"
         val previous = devLog.text.toString().split('\n').takeLast(7)
         devLog.text = (previous + "[$percent%] $message").takeLast(8).joinToString("\n")
     }
