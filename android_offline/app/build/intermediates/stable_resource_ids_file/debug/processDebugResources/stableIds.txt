@@ -1,0 +1,3 @@
+com.latifbrain.offline:style/AppTheme = 0x7f030000
+com.latifbrain.offline:string/app_name = 0x7f020000
+com.latifbrain.offline:drawable/ic_latif_launcher = 0x7f010000

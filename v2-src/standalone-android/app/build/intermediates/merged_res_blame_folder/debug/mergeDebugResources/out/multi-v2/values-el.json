@@ -1,0 +1,36 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.latif.audiobook.offline.app-mergeDebugResources-6:/values-el/values-el.xml",
+            "map": [
+                {
+                    "source": "/home/ubuntu/.gradle/caches/8.10.2/transforms/07f69c476f376f8cdc923c14fbda3eb7/transformed/core-1.8.0/res/values-el/values-el.xml",
+                    "from": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "100",
+                        "endOffsets": "151"
+                    },
+                    "to": {
+                        "startLines": "11",
+                        "startColumns": "4",
+                        "startOffsets": "716",
+                        "endColumns": "100",
+                        "endOffsets": "812"
+                    }
+                },
+                {
+                    "source": "/home/ubuntu/.gradle/caches/8.10.2/transforms/bb2ab070a16f273c5fde1a07ad19446a/transformed/media3-exoplayer-1.5.1/res/values-el/values-el.xml",
+                    "from": {
+                        "startLines": "2,3,4,5,6,7,8,9,10",
+                        "startColumns": "4,4,4,4,4,4,4,4,4",
+                        "startOffsets": "55,126,184,242,305,379,455,554,649",
+                        "endColumns": "70,57,57,62,73,75,98,94,66",
+                        "endOffsets": "121,179,237,300,374,450,549,644,711"
+                    }
+                }
+            ]
+        }
+    ]
+}

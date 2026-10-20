@@ -1,0 +1,4 @@
+com.latifbrain.offline
+drawable ic_latif_launcher
+string app_name
+style AppTheme

@@ -1,0 +1,45 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.latifbrain.offline.app-debug-4:/values_values.arsc.flat",
+            "map": [
+                {
+                    "source": "/home/ubuntu/repos/LAtifword-Audiobook/android_offline/app/src/main/res/values/styles.xml",
+                    "from": {
+                        "startLines": "1",
+                        "startColumns": "4",
+                        "startOffsets": "16",
+                        "endLines": "9",
+                        "endColumns": "12",
+                        "endOffsets": "517"
+                    },
+                    "to": {
+                        "startLines": "3",
+                        "startColumns": "4",
+                        "startOffsets": "111",
+                        "endLines": "11",
+                        "endColumns": "12",
+                        "endOffsets": "612"
+                    }
+                },
+                {
+                    "source": "/home/ubuntu/repos/LAtifword-Audiobook/android_offline/app/src/main/res/values/strings.xml",
+                    "from": {
+                        "startLines": "1",
+                        "startColumns": "4",
+                        "startOffsets": "16",
+                        "endColumns": "55",
+                        "endOffsets": "67"
+                    },
+                    "to": {
+                        "startLines": "2",
+                        "startColumns": "4",
+                        "startOffsets": "55",
+                        "endColumns": "55",
+                        "endOffsets": "106"
+                    }
+                }
+            ]
+        }
+    ]
+}
