@@ -153,10 +153,13 @@ jobs:
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
           test -x "$AAPT"
           "$AAPT" dump permissions app/build/outputs/apk/debug/app-debug.apk | tee ../release/DEBUG-PERMISSIONS.txt
-          if grep -qi 'android.permission.INTERNET' ../release/DEBUG-PERMISSIONS.txt; then
-            echo 'Offline APK unexpectedly requests INTERNET permission' >&2
-            exit 1
-          fi
+          "$AAPT" dump permissions app/build/outputs/apk/release/app-release-unsigned.apk | tee ../release/RELEASE-PERMISSIONS.txt
+          for permissions in ../release/DEBUG-PERMISSIONS.txt ../release/RELEASE-PERMISSIONS.txt; do
+            if grep -qi 'android.permission.INTERNET' "$permissions"; then
+              echo "Offline APK unexpectedly requests INTERNET permission: $permissions" >&2
+              exit 1
+            fi
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -166,6 +169,7 @@ jobs:
             release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-UNSIGNED.apk
             release/SHA256SUMS.txt
             release/DEBUG-PERMISSIONS.txt
+            release/RELEASE-PERMISSIONS.txt
             release/HABIBI-MODEL-ASSETS.txt
             release/HABIBI-MODEL-SHA256SUMS.txt
           retention-days: 30
