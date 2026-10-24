@@ -150,6 +150,12 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk ../release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-DEBUG.apk
           cp app/build/outputs/apk/release/app-release-unsigned.apk ../release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-UNSIGNED.apk
           sha256sum ../release/*.apk | tee ../release/SHA256SUMS.txt
+          # Preserve exact source provenance for each independently downloaded APK.
+          git rev-parse HEAD | tee ../release/SOURCE-COMMIT.txt
+          # An assembled ZIP is not enough: verify the debug APK's install signature.
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk | tee ../release/DEBUG-SIGNATURE.txt
           AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
           test -x "$AAPT"
           "$AAPT" dump permissions app/build/outputs/apk/debug/app-debug.apk | tee ../release/DEBUG-PERMISSIONS.txt
@@ -168,6 +174,8 @@ jobs:
             release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-DEBUG.apk
             release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-UNSIGNED.apk
             release/SHA256SUMS.txt
+            release/SOURCE-COMMIT.txt
+            release/DEBUG-SIGNATURE.txt
             release/DEBUG-PERMISSIONS.txt
             release/RELEASE-PERMISSIONS.txt
             release/HABIBI-MODEL-ASSETS.txt
