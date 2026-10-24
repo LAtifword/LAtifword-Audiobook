@@ -122,35 +122,56 @@ internal class OfflineNarrationSession(
             output.play()
             while (!cancelled.get()) {
                 val request = queue.currentRequest() ?: break
-                val started = SystemClock.elapsedRealtime()
-                onStatus("Synthesizing section ${request.segment.index + 1}…")
-                val pcm = activeEngine.synthesize(
-                    reference = reference,
-                    text = request.segment.text,
-                    cancelled = cancelled
+                // Split against the actual selected reference, not a fixed character count.
+                // Every chunk is written before advancing the book queue's playhead.
+                val sections = HabibiFramePlanner.plan(
+                    reference.samples.size, reference.transcript, request.segment.text
                 )
-                try {
-                    if (cancelled.get() || !queue.accepts(request)) break
-                    val synthesisMs = SystemClock.elapsedRealtime() - started
-                    val audioMs = pcm.size.toDouble() * 1000.0 / activeEngine.sampleRate
-                    val rtf = if (audioMs > 0.0) synthesisMs / audioMs else Double.NaN
-                    onStatus("Section ${request.segment.index + 1}: ${synthesisMs} ms synthesis · " +
-                        "RTF ${String.format(Locale.US, "%.2f", rtf)}")
-                    if (!output.write(
-                            pcm,
-                            isCurrent = { !cancelled.get() && queue.accepts(request) },
-                            onFirstWrite = {
-                                if (!firstPcmWritten) {
-                                    firstPcmWritten = true
-                                    onStatus("First PCM write after " +
-                                        "${SystemClock.elapsedRealtime() - sessionStarted} ms")
+                var complete = true
+                for ((partIndex, partText) in sections.withIndex()) {
+                    if (cancelled.get() || !queue.accepts(request)) {
+                        complete = false
+                        break
+                    }
+                    val started = SystemClock.elapsedRealtime()
+                    onStatus("Synthesizing section ${request.segment.index + 1} " +
+                        "(${partIndex + 1}/${sections.size})…")
+                    val pcm = activeEngine.synthesize(
+                        reference = reference,
+                        text = partText,
+                        cancelled = cancelled
+                    )
+                    try {
+                        if (cancelled.get() || !queue.accepts(request)) {
+                            complete = false
+                            break
+                        }
+                        val synthesisMs = SystemClock.elapsedRealtime() - started
+                        val audioMs = pcm.size.toDouble() * 1000.0 / activeEngine.sampleRate
+                        val rtf = if (audioMs > 0.0) synthesisMs / audioMs else Double.NaN
+                        onStatus("Section ${request.segment.index + 1} " +
+                            "(${partIndex + 1}/${sections.size}): ${synthesisMs} ms · " +
+                            "RTF ${String.format(Locale.US, "%.2f", rtf)}")
+                        if (!output.write(
+                                pcm,
+                                isCurrent = { !cancelled.get() && queue.accepts(request) },
+                                onFirstWrite = {
+                                    if (!firstPcmWritten) {
+                                        firstPcmWritten = true
+                                        onStatus("First PCM write after " +
+                                            "${SystemClock.elapsedRealtime() - sessionStarted} ms")
+                                    }
                                 }
-                            }
-                        )) break
-                    queue.acknowledge(request)
-                } finally {
-                    pcm.fill(0)
+                            )) {
+                            complete = false
+                            break
+                        }
+                    } finally {
+                        pcm.fill(0)
+                    }
                 }
+                if (!complete || cancelled.get() || !queue.accepts(request)) break
+                queue.acknowledge(request)
             }
             if (!cancelled.get()) onStatus("End of available narration")
         } catch (t: Exception) {
