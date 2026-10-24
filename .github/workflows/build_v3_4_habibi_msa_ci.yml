@@ -105,6 +105,11 @@ jobs:
               have_in={x.name for x in m.graph.input}; have_out={x.name for x in m.graph.output}
               assert need_in <= have_in, (name, need_in-have_in)
               assert need_out <= have_out, (name, need_out-have_out)
+              # Print actual tensor dtypes/shapes, not just names: a matching
+              # ONNX input name alone cannot establish Android runtime compatibility.
+              for direction, values in [('input', m.graph.input), ('output', m.graph.output)]:
+                  for value in values:
+                      print(f'{name} {direction} {value.name}: {onnx.helper.printable_type(value.type)}')
 
           cfg=json.loads((root/'config.json').read_text(encoding='utf-8'))
           assert cfg.get('add_blank_char') is False
