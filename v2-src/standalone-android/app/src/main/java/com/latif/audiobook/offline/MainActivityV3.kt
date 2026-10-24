@@ -33,6 +33,8 @@ class MainActivityV3 : Activity() {
     private var referenceUri: Uri? = null
     private var referenceName: String? = null
     private var liveSession: OfflineNarrationSession? = null
+    // UI-thread generation token: prevents a stopped/superseded import from starting narration.
+    private var liveRequestSerial = 0L
 
     private lateinit var titleInput: EditText
     private lateinit var textInput: EditText
@@ -129,6 +131,7 @@ class MainActivityV3 : Activity() {
     }
 
     override fun onDestroy() {
+        liveRequestSerial++
         liveSession?.close()
         liveSession = null
         super.onDestroy()
@@ -295,6 +298,7 @@ class MainActivityV3 : Activity() {
         }, params(top = 8))
         root.addView(button("■ إيقاف القراءة الفورية", false).apply {
             setOnClickListener {
+                liveRequestSerial++
                 liveSession?.stop()
                 status.text = "توقفت القراءة الفورية"
             }
@@ -313,6 +317,7 @@ class MainActivityV3 : Activity() {
     }
 
     private fun startLiveReading() {
+        val requestSerial = ++liveRequestSerial
         val pasted = textInput.text.toString().trim()
         val selectedBook = bookUri
         if (pasted.isBlank() && selectedBook == null) {
@@ -330,11 +335,12 @@ class MainActivityV3 : Activity() {
         val app = applicationContext
         Thread({
             val result = runCatching {
-                if (pasted.isNotBlank()) pasted
-                else BookParser.readText(app, requireNotNull(selectedBook), display)
+                // A selected book takes precedence over any stale pasted-text field.
+                if (selectedBook != null) BookParser.readText(app, selectedBook, display)
+                else pasted
             }
             runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (isFinishing || isDestroyed || requestSerial != liveRequestSerial) return@runOnUiThread
                 result.onSuccess { text ->
                     runCatching {
                         val session = liveSession ?: OfflineNarrationSession(app) { message ->
