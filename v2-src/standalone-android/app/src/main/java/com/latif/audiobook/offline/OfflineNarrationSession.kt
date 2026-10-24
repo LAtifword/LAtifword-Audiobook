@@ -117,6 +117,8 @@ internal class OfflineNarrationSession(
             if (cancelled.get()) return
             val output = sink ?: OfflinePcmSink(activeEngine.sampleRate).also { sink = it }
             output.flush()
+            // Cancellation may arrive while the sink is being prepared.
+            if (cancelled.get()) return
             output.play()
             while (!cancelled.get()) {
                 val request = queue.currentRequest() ?: break
@@ -156,6 +158,10 @@ internal class OfflineNarrationSession(
                 Log.e("OfflineNarrationSession", "Offline narration failed", t)
                 onStatus("Offline playback error: ${t.message ?: t.javaClass.simpleName}")
             }
+        } finally {
+            // The worker is serialized by executor: discard any PCM that raced
+            // with a seek/stop/voice change before the next worker can play.
+            if (cancelled.get()) runCatching { sink?.flush() }
         }
     }
 
