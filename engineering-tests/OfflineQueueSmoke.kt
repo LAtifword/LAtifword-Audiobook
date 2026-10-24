@@ -32,5 +32,30 @@ fun main() {
     check(afterSeek.first().segment.index == 0)
     queue.stop()
     check(!queue.accepts(afterSeek.first()))
-    println("PASS: planner, queue, voice invalidation, seek, stop")
+    // A short custom transcript with a long reference consumes acoustic frames
+    // quickly; splitting must respect the actual model estimate.
+    val referenceSamples = 24_000 * 15
+    val transcript = "هذا صوت مرجعي قصير"
+    val longArabic = ("هذه فقرة عربية متصلة تختبر تقسيم القراءة إلى أجزاء آمنة. ").repeat(12)
+    val pieces = HabibiFramePlanner.plan(referenceSamples, transcript, longArabic)
+    check(pieces.size > 1)
+    check(pieces.all {
+        HabibiFramePlanner.estimateFrames(referenceSamples, transcript, it) <= 4064L
+    })
+    check(pieces.joinToString(" ").replace(" ", "") ==
+        ArabicText.prepareForNarration(longArabic).replace(" ", ""))
+
+    // Unbroken words must still advance without splitting surrogate pairs.
+    val oversizedWord = "ب".repeat(1000)
+    val wordPieces = HabibiFramePlanner.plan(referenceSamples, transcript, oversizedWord)
+    check(wordPieces.size > 1)
+    check(wordPieces.joinToString("") == oversizedWord)
+    check(wordPieces.all {
+        HabibiFramePlanner.estimateFrames(referenceSamples, transcript, it) <= 4064L
+    })
+    check(HabibiFramePlanner.plan(24_000 * 2, transcript, "مرحبا بالعالم").size == 1)
+    check(runCatching {
+        HabibiFramePlanner.plan(24_000 * 60, transcript, "مرحبا")
+    }.isFailure)
+    println("PASS: planner, queue, voice invalidation, seek, stop, Habibi frame splitting")
 }
