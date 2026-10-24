@@ -1,0 +1,25 @@
+name: Offline reader JVM verification
+on:
+  push:
+    branches: [offline-reader-rebuild-20261024]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  verify-queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install Kotlin compiler
+        run: |
+          curl -fL --retry 3 -o kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v2.0.21/kotlin-compiler-2.0.21.zip
+          unzip -q kotlin.zip -d "$RUNNER_TEMP/kotlin"
+          echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
+      - name: Compile and execute queue smoke tests
+        run: |
+          SRC=v2-src/standalone-android/app/src/main/java/com/latif/audiobook/offline
+          kotlinc "$SRC/OfflineNarrationPlanner.kt" "$SRC/OfflinePlaybackQueue.kt" engineering-tests/OfflineQueueSmoke.kt -include-runtime -d queue-tests.jar
+          java -jar queue-tests.jar
