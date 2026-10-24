@@ -106,19 +106,24 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                 progress?.invoke("Trying $label…")
                 Log.i(TAG, "Attempting ONNX backend: $label")
 
-                val options = createOptions(backend)
+                var candidateOptions: OrtSession.SessionOptions? = null
                 var newPreprocess: OrtSession? = null
                 var newTransformer: OrtSession? = null
                 var newDecoder: OrtSession? = null
                 try {
-                    newPreprocess = env.createSession(preFile.absolutePath, options)
-                    newTransformer = env.createSession(transformerFile.absolutePath, options)
-                    newDecoder = env.createSession(decodeFile.absolutePath, options)
+                    // Provider configuration can fail before session creation (for
+                    // example when XNNPACK is unavailable). It must also fall back.
+                    val configuredOptions = createOptions(backend)
+                    candidateOptions = configuredOptions
+                    newPreprocess = env.createSession(preFile.absolutePath, configuredOptions)
+                    newTransformer = env.createSession(transformerFile.absolutePath, configuredOptions)
+                    newDecoder = env.createSession(decodeFile.absolutePath, configuredOptions)
 
                     preprocess = newPreprocess
                     transformer = newTransformer
                     decoder = newDecoder
-                    sessionOptions = options
+                    sessionOptions = configuredOptions
+                    candidateOptions = null
                     newPreprocess = null
                     newTransformer = null
                     newDecoder = null
@@ -135,7 +140,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
                     runCatching { newPreprocess?.close() }
                     runCatching { newTransformer?.close() }
                     runCatching { newDecoder?.close() }
-                    runCatching { options.close() }
+                    runCatching { candidateOptions?.close() }
                     val failure = SilmaModelException.OnnxInitializationFailed(label, t)
                     backendFailures += failure
                     Log.e(TAG, "ONNX backend failed: $label", t)
@@ -168,6 +173,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
     private fun createOptions(backend: Backend): OrtSession.SessionOptions {
         val options = OrtSession.SessionOptions()
+        try {
         options.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
         options.setExecutionMode(OrtSession.SessionOptions.ExecutionMode.SEQUENTIAL)
         options.setInterOpNumThreads(1)
@@ -198,6 +204,11 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
             }
         }
         return options
+        } catch (t: Throwable) {
+            // Even a partially configured provider must not leak native options.
+            runCatching { options.close() }
+            throw t
+        }
     }
 
     private fun backendLabel(backend: Backend): String = when (backend) {
