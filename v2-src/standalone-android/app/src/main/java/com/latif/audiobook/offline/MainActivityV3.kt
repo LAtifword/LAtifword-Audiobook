@@ -330,6 +330,9 @@ class MainActivityV3 : Activity() {
             Toast.makeText(this, "أدخل النص الحرفي للصوت المرجعي.", Toast.LENGTH_LONG).show()
             return
         }
+        // Stop the previous book immediately, before potentially slow PDF/EPUB parsing.
+        // Otherwise old narration can continue while the replacement is being imported.
+        liveSession?.stop()
         status.text = "قراءة النص وتجهيز الراوي المحلي…"
         val display = bookName
         val app = applicationContext
@@ -401,6 +404,8 @@ class MainActivityV3 : Activity() {
         runCatching {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
+        // A pending background import must not start with an obsolete book/voice choice.
+        liveRequestSerial++
         if (requestCode == PICK_REFERENCE) {
             referenceUri = uri
             referenceName = queryName(uri)
