@@ -55,6 +55,12 @@ internal class OfflinePlaybackQueue(private val planner: OfflineNarrationPlanner
 
     @Synchronized fun currentIndex(): Int = cursor
 
+    /** Returns the request for the current playhead, or null at end-of-book. */
+    @Synchronized fun currentRequest(): PlaybackRequest? = pending[cursor]
+
+    /** Snapshot of the current prefetch window for a synthesis worker. */
+    @Synchronized fun pendingRequests(): List<PlaybackRequest> = pending.values.toList()
+
     private fun schedule(): List<PlaybackRequest> {
         val added = mutableListOf<PlaybackRequest>()
         val end = (cursor + 4).coerceAtMost(segments.size)
