@@ -32,6 +32,7 @@ class MainActivityV3 : Activity() {
     private var bookName: String? = null
     private var referenceUri: Uri? = null
     private var referenceName: String? = null
+    private var liveSession: OfflineNarrationSession? = null
 
     private lateinit var titleInput: EditText
     private lateinit var textInput: EditText
@@ -125,6 +126,12 @@ class MainActivityV3 : Activity() {
     override fun onStop() {
         runCatching { unregisterReceiver(receiver) }
         super.onStop()
+    }
+
+    override fun onDestroy() {
+        liveSession?.close()
+        liveSession = null
+        super.onDestroy()
     }
 
     private fun buildUi(): View {
@@ -281,6 +288,18 @@ class MainActivityV3 : Activity() {
         row.addView(share, LinearLayout.LayoutParams(0, dp(54), 1f).apply { marginStart = dp(8) })
         root.addView(row, params(top = 10))
 
+        root.addView(kicker("05 / الاستماع الفوري · دون انتظار تصدير الكتاب"))
+        root.addView(body("قراءة محلية مباشرة عبر نموذج Habibi MSA المضمّن. يعمل الصوت بعد تجهيز المقطع الأول؛ لا حاجة إلى خدمة إنترنت."))
+        root.addView(button("▶ استمع الآن · قراءة محلية", true).apply {
+            setOnClickListener { startLiveReading() }
+        }, params(top = 8))
+        root.addView(button("■ إيقاف القراءة الفورية", false).apply {
+            setOnClickListener {
+                liveSession?.stop()
+                status.text = "توقفت القراءة الفورية"
+            }
+        }, params(top = 8))
+
         root.addView(TextView(this).apply {
             text = "OFFLINE · SILMA F5 · AUTHOR 0.90x · 24 NFE · XNNPACK / NNAPI / CPU · MEDIA3 · v3.3"
             setTextColor(Color.rgb(90, 94, 110))
@@ -291,6 +310,49 @@ class MainActivityV3 : Activity() {
             setPadding(0, dp(30), 0, 0)
         })
         return scroll
+    }
+
+    private fun startLiveReading() {
+        val pasted = textInput.text.toString().trim()
+        val selectedBook = bookUri
+        if (pasted.isBlank() && selectedBook == null) {
+            Toast.makeText(this, "اختر كتاباً أو الصق نصاً أولاً.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val selectedReference = referenceUri
+        val transcript = referenceTranscript.text.toString().trim()
+        if (selectedReference != null && transcript.isBlank()) {
+            Toast.makeText(this, "أدخل النص الحرفي للصوت المرجعي.", Toast.LENGTH_LONG).show()
+            return
+        }
+        status.text = "قراءة النص وتجهيز الراوي المحلي…"
+        val display = bookName
+        val app = applicationContext
+        Thread({
+            val result = runCatching {
+                if (pasted.isNotBlank()) pasted
+                else BookParser.readText(app, requireNotNull(selectedBook), display)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                result.onSuccess { text ->
+                    runCatching {
+                        val session = liveSession ?: OfflineNarrationSession(app) { message ->
+                            runOnUiThread {
+                                if (!isFinishing && !isDestroyed) status.text = message
+                            }
+                        }.also { liveSession = it }
+                        session.start(
+                            text = text,
+                            voiceId = selectedReference?.toString() ?: "built-in",
+                            referenceUri = selectedReference,
+                            referenceTranscript = transcript
+                        )
+                        status.text = "تحميل نموذج الصوت المحلي…"
+                    }.onFailure { status.text = "تعذر بدء القراءة: ${it.message}" }
+                }.onFailure { status.text = "تعذر قراءة الكتاب: ${it.message}" }
+            }
+        }, "LATIF-book-import").start()
     }
 
     private fun chooseBook() {
