@@ -47,13 +47,19 @@ internal class OfflinePcmSink(
     @Synchronized fun pause() = track.pause()
 
     /** Only call on the playback worker; a generation change must stop that worker first. */
-    fun write(pcm: ShortArray, isCurrent: () -> Boolean): Boolean {
+    fun write(
+        pcm: ShortArray,
+        isCurrent: () -> Boolean,
+        onFirstWrite: (() -> Unit)? = null
+    ): Boolean {
+        require(pcm.isNotEmpty()) { "Synthesizer returned an empty PCM segment" }
         var offset = 0
         while (offset < pcm.size) {
             if (!isCurrent()) return false
             val length = minOf(2048, pcm.size - offset)
             val written = track.write(pcm, offset, length, AudioTrack.WRITE_BLOCKING)
             if (written <= 0) throw IllegalStateException("AudioTrack write failed: $written")
+            if (offset == 0 && isCurrent()) onFirstWrite?.invoke()
             offset += written
         }
         return true
