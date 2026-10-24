@@ -3,6 +3,8 @@ name: Build LATIF Voice Studio v3.4 Habibi MSA CI
 on:
   push:
     branches: [habibi-msa-production, mainLAtifword]
+  pull_request:
+    branches: [mainLAtifword]
   workflow_dispatch:
 
 permissions:
@@ -103,6 +105,11 @@ jobs:
               have_in={x.name for x in m.graph.input}; have_out={x.name for x in m.graph.output}
               assert need_in <= have_in, (name, need_in-have_in)
               assert need_out <= have_out, (name, need_out-have_out)
+              # Print actual tensor dtypes/shapes, not just names: a matching
+              # ONNX input name alone cannot establish Android runtime compatibility.
+              for direction, values in [('input', m.graph.input), ('output', m.graph.output)]:
+                  for value in values:
+                      print(f'{name} {direction} {value.name}: {onnx.helper.printable_type(value.type)}')
 
           cfg=json.loads((root/'config.json').read_text(encoding='utf-8'))
           assert cfg.get('add_blank_char') is False
@@ -142,7 +149,17 @@ jobs:
           unzip -t app/build/outputs/apk/release/app-release-unsigned.apk >/dev/null
           cp app/build/outputs/apk/debug/app-debug.apk ../release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-DEBUG.apk
           cp app/build/outputs/apk/release/app-release-unsigned.apk ../release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-UNSIGNED.apk
-          sha256sum ../release/*.apk > ../release/SHA256SUMS.txt
+          sha256sum ../release/*.apk | tee ../release/SHA256SUMS.txt
+          AAPT="$(find "$ANDROID_HOME/build-tools" -type f -name aapt | sort -V | tail -1)"
+          test -x "$AAPT"
+          "$AAPT" dump permissions app/build/outputs/apk/debug/app-debug.apk | tee ../release/DEBUG-PERMISSIONS.txt
+          "$AAPT" dump permissions app/build/outputs/apk/release/app-release-unsigned.apk | tee ../release/RELEASE-PERMISSIONS.txt
+          for permissions in ../release/DEBUG-PERMISSIONS.txt ../release/RELEASE-PERMISSIONS.txt; do
+            if grep -qi 'android.permission.INTERNET' "$permissions"; then
+              echo "Offline APK unexpectedly requests INTERNET permission: $permissions" >&2
+              exit 1
+            fi
+          done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -151,6 +168,8 @@ jobs:
             release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-DEBUG.apk
             release/LATIF-VOICE-STUDIO-v3.4.0-HABIBI-MSA-UNSIGNED.apk
             release/SHA256SUMS.txt
+            release/DEBUG-PERMISSIONS.txt
+            release/RELEASE-PERMISSIONS.txt
             release/HABIBI-MODEL-ASSETS.txt
             release/HABIBI-MODEL-SHA256SUMS.txt
           retention-days: 30

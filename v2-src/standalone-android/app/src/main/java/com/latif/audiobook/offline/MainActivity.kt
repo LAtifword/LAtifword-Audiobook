@@ -37,6 +37,8 @@ class MainActivity : Activity() {
     private var selectedUri: Uri? = null
     private var selectedDisplayName: String? = null
     private var mediaPlayer: MediaPlayer? = null
+    private var readerSession: OfflineNarrationSession? = null
+    private var selectedBookText: String? = null
     private var selectedProfile: NarrationProfile = NarrationProfile.LITERARY
 
     private lateinit var titleInput: EditText
@@ -135,6 +137,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        readerSession?.close()
+        readerSession = null
         mediaPlayer?.release()
         super.onDestroy()
     }
@@ -248,6 +252,19 @@ class MainActivity : Activity() {
 
         generateButton = primaryButton("إنشاء الكتاب الصوتي كاملاً").apply { setOnClickListener { startGeneration() } }
         root.addView(generateButton, fullWidth(dp(64), top = 16))
+
+        // Read immediately using the embedded ONNX model; no exported audio file needed.
+        val readNow = primaryButton("استمع الآن · قراءة محلية مباشرة").apply {
+            setOnClickListener { startLocalReading() }
+        }
+        root.addView(readNow, fullWidth(dp(58), top = 12))
+        val stopReading = secondaryButton("إيقاف القراءة المباشرة").apply {
+            setOnClickListener {
+                readerSession?.stop()
+                statusText.text = "توقفت القراءة المباشرة."
+            }
+        }
+        root.addView(stopReading, fullWidth(dp(48), top = 8))
 
         cancelButton = secondaryButton("إلغاء التوليد").apply {
             visibility = View.GONE
@@ -532,6 +549,7 @@ class MainActivity : Activity() {
         val uri = data?.data ?: return
         runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         selectedUri = uri
+        selectedBookText = null
         selectedDisplayName = queryDisplayName(uri)
         val base = selectedDisplayName?.substringBeforeLast('.')?.trim().orEmpty()
         if (titleInput.text.isBlank()) titleInput.setText(base)
@@ -542,6 +560,8 @@ class MainActivity : Activity() {
                 .onSuccess { text ->
                     val words = text.split(Regex("\\s+")).count { it.isNotBlank() }
                     runOnUiThread {
+                        if (selectedUri != uri) return@runOnUiThread
+                        selectedBookText = text
                         bookMeta.text = "${selectedDisplayName ?: "الكتاب"}  ·  ${"%,d".format(words)} كلمة  ·  ${text.length} حرف"
                         textInput.setText(text.take(3500))
                         statusText.text = "الكتاب جاهز. سيُستخدم النص الكامل في التوليد."
@@ -552,6 +572,27 @@ class MainActivity : Activity() {
                     statusText.text = "اختر ملفاً آخر أو الصق النص مباشرة."
                 } }
         }.start()
+    }
+
+    private fun startLocalReading() {
+        val text = if (selectedUri != null) selectedBookText else textInput.text.toString()
+        if (text.isNullOrBlank()) {
+            Toast.makeText(this, "انتظر اكتمال قراءة الملف أو الصق نصاً أولاً.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (readerSession == null) {
+            readerSession = OfflineNarrationSession(applicationContext) { message ->
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed && ::statusText.isInitialized) {
+                        statusText.text = message
+                    }
+                }
+            }
+        }
+        runCatching { readerSession!!.start(text) }
+            .onFailure { error ->
+                statusText.text = "تعذر بدء القراءة المحلية: ${error.message}"
+            }
     }
 
     private fun startGeneration() {

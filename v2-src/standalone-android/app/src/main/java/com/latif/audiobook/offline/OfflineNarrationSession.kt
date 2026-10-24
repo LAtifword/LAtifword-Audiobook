@@ -1,0 +1,205 @@
+package com.latif.audiobook.offline
+
+import android.content.Context
+import android.net.Uri
+import android.os.SystemClock
+import android.util.Log
+import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Foreground-only, fully local reader. One worker owns the ONNX sessions and PCM sink.
+ * Commands invalidate old requests immediately, without blocking the UI on ONNX inference.
+ */
+internal class OfflineNarrationSession(
+    context: Context,
+    private val onStatus: (String) -> Unit = {}
+) : AutoCloseable {
+    private val appContext = context.applicationContext
+    private val queue = OfflinePlaybackQueue()
+    private val lock = Any()
+    private val executor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "LATIF-local-narrator").apply { isDaemon = true }
+    }
+
+    private data class VoiceChoice(val uri: Uri?, val transcript: String)
+    private var choice = VoiceChoice(null, "")
+    private var engine: SilmaF5Engine? = null // worker thread only
+    @Volatile private var sink: OfflinePcmSink? = null
+    private var activeCancellation = AtomicBoolean(false)
+    private var activeJob: Future<*>? = null
+    private var closed = false
+
+    fun start(
+        text: String,
+        voiceId: String = "built-in",
+        revision: String = "habibi-msa",
+        referenceUri: Uri? = null,
+        referenceTranscript: String = ""
+    ) {
+        require(text.isNotBlank()) { "A book or pasted text is required" }
+        if (referenceUri != null) require(referenceTranscript.isNotBlank()) {
+            "The reference recording requires its exact transcript"
+        }
+        synchronized(lock) {
+            check(!closed)
+            cancelCurrentLocked()
+            choice = VoiceChoice(referenceUri, referenceTranscript)
+            queue.open(text, voiceId, revision)
+            submitLocked()
+        }
+    }
+
+    fun seek(segmentIndex: Int) {
+        synchronized(lock) {
+            check(!closed)
+            cancelCurrentLocked()
+            queue.seek(segmentIndex)
+            submitLocked()
+        }
+    }
+
+    fun switchVoice(
+        voiceId: String,
+        revision: String,
+        referenceUri: Uri? = null,
+        referenceTranscript: String = ""
+    ) {
+        if (referenceUri != null) require(referenceTranscript.isNotBlank())
+        synchronized(lock) {
+            check(!closed)
+            cancelCurrentLocked()
+            choice = VoiceChoice(referenceUri, referenceTranscript)
+            queue.switchVoice(voiceId, revision)
+            submitLocked()
+        }
+    }
+
+    fun stop() {
+        synchronized(lock) {
+            if (closed) return
+            cancelCurrentLocked()
+            queue.stop()
+            onStatus("Playback stopped")
+        }
+    }
+
+    private fun cancelCurrentLocked() {
+        activeCancellation.set(true)
+        activeJob?.cancel(true)
+        // AudioTrack may still contain a short tail; discard it on any new command.
+        runCatching { sink?.flush() }
+    }
+
+    private fun submitLocked() {
+        val cancellation = AtomicBoolean(false)
+        activeCancellation = cancellation
+        val selectedVoice = choice
+        activeJob = executor.submit { render(cancellation, selectedVoice) }
+    }
+
+    private fun render(cancelled: AtomicBoolean, voice: VoiceChoice) {
+        val sessionStarted = SystemClock.elapsedRealtime()
+        var firstPcmWritten = false
+        try {
+            if (cancelled.get()) return
+            val activeEngine = engine ?: SilmaF5Engine(appContext).also { engine = it }
+            onStatus("Loading local speech model…")
+            activeEngine.load { progress ->
+                if (!cancelled.get()) onStatus(progress)
+            }
+            if (cancelled.get()) return
+            onStatus("Model ready in ${SystemClock.elapsedRealtime() - sessionStarted} ms · ${activeEngine.backendName}")
+            val reference = if (voice.uri == null) activeEngine.builtInReference()
+                else activeEngine.referenceFromUri(voice.uri, voice.transcript)
+            if (cancelled.get()) return
+            val output = sink ?: OfflinePcmSink(activeEngine.sampleRate).also { sink = it }
+            output.flush()
+            // Cancellation may arrive while the sink is being prepared.
+            if (cancelled.get()) return
+            output.play()
+            while (!cancelled.get()) {
+                val request = queue.currentRequest() ?: break
+                // Split against the actual selected reference, not a fixed character count.
+                // Every chunk is written before advancing the book queue's playhead.
+                val sections = HabibiFramePlanner.plan(
+                    reference.samples.size, reference.transcript, request.segment.text
+                )
+                var complete = true
+                for ((partIndex, partText) in sections.withIndex()) {
+                    if (cancelled.get() || !queue.accepts(request)) {
+                        complete = false
+                        break
+                    }
+                    val started = SystemClock.elapsedRealtime()
+                    onStatus("Synthesizing section ${request.segment.index + 1} " +
+                        "(${partIndex + 1}/${sections.size})…")
+                    val pcm = activeEngine.synthesize(
+                        reference = reference,
+                        text = partText,
+                        cancelled = cancelled
+                    )
+                    try {
+                        if (cancelled.get() || !queue.accepts(request)) {
+                            complete = false
+                            break
+                        }
+                        val synthesisMs = SystemClock.elapsedRealtime() - started
+                        val audioMs = pcm.size.toDouble() * 1000.0 / activeEngine.sampleRate
+                        val rtf = if (audioMs > 0.0) synthesisMs / audioMs else Double.NaN
+                        onStatus("Section ${request.segment.index + 1} " +
+                            "(${partIndex + 1}/${sections.size}): ${synthesisMs} ms · " +
+                            "RTF ${String.format(Locale.US, "%.2f", rtf)}")
+                        if (!output.write(
+                                pcm,
+                                isCurrent = { !cancelled.get() && queue.accepts(request) },
+                                onFirstWrite = {
+                                    if (!firstPcmWritten) {
+                                        firstPcmWritten = true
+                                        onStatus("First PCM write after " +
+                                            "${SystemClock.elapsedRealtime() - sessionStarted} ms")
+                                    }
+                                }
+                            )) {
+                            complete = false
+                            break
+                        }
+                    } finally {
+                        pcm.fill(0)
+                    }
+                }
+                if (!complete || cancelled.get() || !queue.accepts(request)) break
+                queue.acknowledge(request)
+            }
+            if (!cancelled.get()) onStatus("End of available narration")
+        } catch (t: Exception) {
+            if (!cancelled.get()) {
+                Log.e("OfflineNarrationSession", "Offline narration failed", t)
+                onStatus("Offline playback error: ${t.message ?: t.javaClass.simpleName}")
+            }
+        } finally {
+            // The worker is serialized by executor: discard any PCM that raced
+            // with a seek/stop/voice change before the next worker can play.
+            if (cancelled.get()) runCatching { sink?.flush() }
+        }
+    }
+
+    override fun close() {
+        synchronized(lock) {
+            if (closed) return
+            closed = true
+            cancelCurrentLocked()
+            queue.stop()
+            // Cleanup runs after the active inference task, never concurrently with ONNX.
+            executor.execute {
+                runCatching { sink?.close() }
+                sink = null
+                runCatching { engine?.close() }
+                engine = null
+            }
+            executor.shutdown()
+        }
+    }
+}
