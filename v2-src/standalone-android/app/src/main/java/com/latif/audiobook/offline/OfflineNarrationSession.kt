@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
+import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
@@ -100,12 +101,17 @@ internal class OfflineNarrationSession(
     }
 
     private fun render(cancelled: AtomicBoolean, voice: VoiceChoice) {
+        val sessionStarted = SystemClock.elapsedRealtime()
+        var firstPcmWritten = false
         try {
             if (cancelled.get()) return
             val activeEngine = engine ?: SilmaF5Engine(appContext).also { engine = it }
             onStatus("Loading local speech model…")
-            activeEngine.load()
+            activeEngine.load { progress ->
+                if (!cancelled.get()) onStatus(progress)
+            }
             if (cancelled.get()) return
+            onStatus("Model ready in ${SystemClock.elapsedRealtime() - sessionStarted} ms · ${activeEngine.backendName}")
             val reference = if (voice.uri == null) activeEngine.builtInReference()
                 else activeEngine.referenceFromUri(voice.uri, voice.transcript)
             if (cancelled.get()) return
@@ -123,9 +129,22 @@ internal class OfflineNarrationSession(
                 )
                 try {
                     if (cancelled.get() || !queue.accepts(request)) break
-                    onStatus("Section ${request.segment.index + 1} ready in " +
-                        "${SystemClock.elapsedRealtime() - started} ms")
-                    if (!output.write(pcm) { !cancelled.get() && queue.accepts(request) }) break
+                    val synthesisMs = SystemClock.elapsedRealtime() - started
+                    val audioMs = pcm.size.toDouble() * 1000.0 / activeEngine.sampleRate
+                    val rtf = if (audioMs > 0.0) synthesisMs / audioMs else Double.NaN
+                    onStatus("Section ${request.segment.index + 1}: ${synthesisMs} ms synthesis · " +
+                        "RTF ${String.format(Locale.US, "%.2f", rtf)}")
+                    if (!output.write(
+                            pcm,
+                            isCurrent = { !cancelled.get() && queue.accepts(request) },
+                            onFirstWrite = {
+                                if (!firstPcmWritten) {
+                                    firstPcmWritten = true
+                                    onStatus("First PCM write after " +
+                                        "${SystemClock.elapsedRealtime() - sessionStarted} ms")
+                                }
+                            }
+                        )) break
                     queue.acknowledge(request)
                 } finally {
                     pcm.fill(0)
