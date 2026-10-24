@@ -243,6 +243,13 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
         val cleanText = ArabicText.prepareForNarration(text)
         val ids = encode(refText + cleanText)
         val maxDuration = computeMaxDuration(reference.samples.size, refText, cleanText, speed, 12)
+        // The pinned Habibi preprocess graph has a verified 4096-frame ceiling.
+        // Reject unsafe requests before ONNX allocates tensors or hits Gather idx=4096.
+        // A separate frame-aware segment planner is still required for arbitrary books.
+        require(maxDuration <= MAX_ACOUSTIC_FRAMES) {
+            "Habibi MSA section needs $maxDuration acoustic frames (limit $MAX_ACOUSTIC_FRAMES). " +
+                "Shorten this section or use a representative reference recording and transcript."
+        }
 
         OnnxTensor.createTensor(
             env,
@@ -577,6 +584,7 @@ class SilmaF5Engine(private val context: Context) : AutoCloseable {
 
         const val MIN_STEPS = 8
         const val MAX_STEPS = 32
+        private const val MAX_ACOUSTIC_FRAMES = 4096L
         const val DEFAULT_REFERENCE_ASSET = "habibi-f5/default_ref.wav"
         const val DEFAULT_REFERENCE_TEXT =
             "ويدقق النظر في القرآن الكريم وسائر الكتب السماوية ويتبع مسالك الرسل العظام عليهم الصلاة والسلام."
