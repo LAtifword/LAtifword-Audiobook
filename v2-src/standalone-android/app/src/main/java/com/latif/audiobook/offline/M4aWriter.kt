@@ -158,7 +158,9 @@ class M4aWriter(
         try {
             queueEndOfStream()
             drainEncoder(endOfStream = true)
-            stopCodecAndMuxer()
+            check(muxerStarted) { "AAC encoder produced no output format" }
+            // A non-empty file can still be corrupt if MediaMuxer.stop() fails.
+            stopCodecAndMuxer(throwOnMuxerFailure = true)
             require(temporaryFile.isFile && temporaryFile.length() > 0L) {
                 "M4A output is empty"
             }
@@ -260,12 +262,21 @@ class M4aWriter(
 
     private fun samplesToPts(samples: Long): Long = samples * 1_000_000L / sampleRate.toLong()
 
-    private fun stopCodecAndMuxer() {
+    private fun stopCodecAndMuxer(throwOnMuxerFailure: Boolean = false) {
         if (stopped.getAndSet(true)) return
         runCatching { codec.stop() }
         runCatching { codec.release() }
-        if (muxerStarted) runCatching { muxer.stop() }
+        // Always release native resources, but never publish a file if its
+        // MP4 container failed to finalize successfully.
+        val muxerStopFailure = if (muxerStarted) {
+            runCatching { muxer.stop() }.exceptionOrNull()
+        } else {
+            null
+        }
         runCatching { muxer.release() }
+        if (throwOnMuxerFailure && muxerStopFailure != null) {
+            throw IOException("Unable to finalize M4A container", muxerStopFailure)
+        }
     }
 
     private fun publishToMusicDirectory(): Uri {
