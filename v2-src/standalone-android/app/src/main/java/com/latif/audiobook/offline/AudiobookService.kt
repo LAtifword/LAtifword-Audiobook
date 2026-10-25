@@ -168,26 +168,38 @@ class AudiobookService : Service() {
 
                 val sectionStartMs = activeWriter.currentDurationMs()
                 val chunkStart = SystemClock.elapsedRealtime()
-                val audio = engine.synthesize(
-                    reference = reference,
-                    text = clean,
-                    speed = speed,
-                    nfeSteps = nfeSteps,
-                    cancelled = cancelled,
-                ) { step, stepCount ->
-                    val unit = (index.toDouble() + step.toDouble() / stepCount.coerceAtLeast(1)) / chunks.size.toDouble()
-                    val percent = 5 + (unit * 92.0).roundToInt().coerceIn(0, 92)
-                    sendProgress(
-                        percent,
-                        "SILMA ${index + 1}/${chunks.size} · refinement $step/$stepCount · Author Narrator · ${engine.backendName}",
-                    )
-                }
-
-                val audioMs = audio.size * 1000L / engine.sampleRate
-                try {
-                    activeWriter.writePcm16(audio)
-                } finally {
-                    audio.fill(0)
+                // A character-limited section can still exceed Habibi's 4096-frame
+                // ONNX ceiling with a long reference or short transcript. Apply the
+                // same reference-aware planner used by immediate offline playback.
+                val safeParts = HabibiFramePlanner.plan(
+                    reference.samples.size, reference.transcript, clean, speed
+                )
+                for ((partIndex, partText) in safeParts.withIndex()) {
+                    if (cancelled.get()) throw JobCancelledException()
+                    val audio = engine.synthesize(
+                        reference = reference,
+                        text = partText,
+                        speed = speed,
+                        nfeSteps = nfeSteps,
+                        cancelled = cancelled,
+                    ) { step, stepCount ->
+                        val partProgress = (partIndex.toDouble() +
+                            step.toDouble() / stepCount.coerceAtLeast(1)) / safeParts.size
+                        val unit = (index.toDouble() + partProgress) / chunks.size
+                        val percent = 5 + (unit * 92.0).roundToInt().coerceIn(0, 92)
+                        sendProgress(
+                            percent,
+                            "SILMA ${index + 1}/${chunks.size} · part ${partIndex + 1}/${safeParts.size} · " +
+                                "refinement $step/$stepCount · ${engine.backendName}",
+                        )
+                    }
+                    try {
+                        if (cancelled.get()) throw JobCancelledException()
+                        completedAudioMs += audio.size * 1000L / engine.sampleRate
+                        activeWriter.writePcm16(audio)
+                    } finally {
+                        audio.fill(0)
+                    }
                 }
 
                 val pauseMs = when {
@@ -205,7 +217,6 @@ class AudiobookService : Service() {
 
                 val chunkMs = SystemClock.elapsedRealtime() - chunkStart
                 completedMs += chunkMs
-                completedAudioMs += audioMs
                 completedCount++
 
                 if (!previewOnly && index + 1 < chunks.size) {
