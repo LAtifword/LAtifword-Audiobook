@@ -85,15 +85,16 @@ class AudiobookService : Service() {
         val speed = AUTHOR_SPEED
         val nfeSteps = DEFAULT_NFE_STEPS
 
-        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LatifVoiceStudio:render").apply {
-            setReferenceCounted(false)
-            acquire(24 * 60 * 60 * 1000L)
-        }
-
         var engine: SilmaF5Engine? = null
         var writer: M4aWriter? = null
         try {
+            // Include wake-lock acquisition in the normal failure/cleanup path.
+            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "LatifVoiceStudio:render").apply {
+                setReferenceCounted(false)
+                acquire(24 * 60 * 60 * 1000L)
+            }
+            if (cancelled.get()) throw JobCancelledException()
             sendProgress(1, "Reading manuscript…")
             val text = rawText?.takeIf { it.isNotBlank() }
                 ?: BookParser.readText(this, requireNotNull(uri), displayName)
@@ -104,6 +105,7 @@ class AudiobookService : Service() {
             val allChunks = BookParser.splitForNarration(text, chunkChars)
             require(allChunks.isNotEmpty()) { "No narration sections were created." }
             val chunks = if (previewOnly) listOf(allChunks.first()) else allChunks
+            if (cancelled.get()) throw JobCancelledException()
 
             val startup = SilmaStartupController(this)
             engine = startup.load { state ->
@@ -122,6 +124,7 @@ class AudiobookService : Service() {
                 }
             }
 
+            if (cancelled.get()) throw JobCancelledException()
             val reference = if (referenceUri != null) {
                 require(referenceText.isNotBlank()) { "Custom reference transcript is required." }
                 sendProgress(4, "Loading custom reference voice…")
@@ -238,6 +241,7 @@ class AudiobookService : Service() {
 
             require(navigationSections.isNotEmpty()) { "No audio navigation sections were generated." }
             val finalDurationMs = activeWriter.currentDurationMs()
+            if (cancelled.get()) throw JobCancelledException()
             sendProgress(98, if (previewOnly) "Mastering author narrator preview…" else "Mastering final audiobook…")
             val out = activeWriter.finish()
 
