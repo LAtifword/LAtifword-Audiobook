@@ -52,22 +52,36 @@ class M4aWriter(
         require(channelCount == 1 || channelCount == 2) { "Only mono or stereo PCM is supported" }
         require(bitrate > 0) { "Invalid AAC bitrate: $bitrate" }
 
-        codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-        val format = MediaFormat.createAudioFormat(
-            MediaFormat.MIMETYPE_AUDIO_AAC,
-            sampleRate,
-            channelCount,
-        ).apply {
-            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, INPUT_BUFFER_SIZE_BYTES)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+        // If configure/start or muxer creation fails, release the native codec.
+        // A failed constructor cannot be followed by abort() or close().
+        val createdCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        try {
+            val format = MediaFormat.createAudioFormat(
+                MediaFormat.MIMETYPE_AUDIO_AAC,
+                sampleRate,
+                channelCount,
+            ).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, INPUT_BUFFER_SIZE_BYTES)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    setInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+                }
             }
+            createdCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            createdCodec.start()
+            val createdMuxer = MediaMuxer(
+                temporaryFile.absolutePath,
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
+            )
+            codec = createdCodec
+            muxer = createdMuxer
+        } catch (t: Throwable) {
+            runCatching { createdCodec.stop() }
+            runCatching { createdCodec.release() }
+            runCatching { temporaryFile.delete() }
+            throw t
         }
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        codec.start()
-        muxer = MediaMuxer(temporaryFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     }
 
     @Synchronized
