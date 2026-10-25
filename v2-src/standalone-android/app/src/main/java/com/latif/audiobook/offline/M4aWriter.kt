@@ -321,7 +321,8 @@ class M4aWriter(
             temporaryFile.delete()
             return uri
         } catch (t: Throwable) {
-            resolver.delete(uri, null, null)
+            // Cleanup must not replace the original publication error.
+            runCatching { resolver.delete(uri, null, null) }
             throw t
         }
     }
@@ -332,8 +333,8 @@ class M4aWriter(
             appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: appContext.filesDir,
             "LATIF Audiobooks",
         ).apply { mkdirs() }
-        val target = File(parent, fileName)
-        val staging = File(parent, "$fileName.tmp")
+        // Each export needs its own staging file, even when titles match.
+        val staging = File.createTempFile("latif_", ".m4a.tmp", parent)
         try {
             FileInputStream(temporaryFile).use { input ->
                 FileOutputStream(staging).use { output ->
@@ -341,21 +342,31 @@ class M4aWriter(
                     output.fd.sync()
                 }
             }
-            if (target.exists() && !target.delete()) {
-                throw IOException("Unable to replace ${target.absolutePath}")
-            }
-            if (!staging.renameTo(target)) {
-                throw IOException("Unable to commit ${target.absolutePath}")
+            // Never delete an existing audiobook before a replacement is ready.
+            // A failed rename must leave the previous export untouched.
+            val target = synchronized(PRE_Q_EXPORT_LOCK) {
+                val base = fileName.removeSuffix(".m4a")
+                val destination = (1..1_000).asSequence()
+                    .map { index ->
+                        File(parent, if (index == 1) fileName else "$base ($index).m4a")
+                    }
+                    .firstOrNull { !it.exists() }
+                    ?: throw IOException("Unable to allocate a unique audiobook filename")
+                if (!staging.renameTo(destination)) {
+                    throw IOException("Unable to commit ${destination.absolutePath}")
+                }
+                destination
             }
             temporaryFile.delete()
             return Uri.fromFile(target)
         } catch (t: Throwable) {
-            staging.delete()
+            runCatching { staging.delete() }
             throw t
         }
     }
 
     companion object {
+        private val PRE_Q_EXPORT_LOCK = Any()
         private const val BYTES_PER_SAMPLE = 2
         private const val INPUT_BUFFER_SIZE_BYTES = 64 * 1024
         private const val INPUT_TIMEOUT_US = 10_000L
