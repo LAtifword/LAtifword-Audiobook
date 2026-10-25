@@ -89,6 +89,9 @@ class M4aWriter(
     fun writePcm16(samples: ShortArray) {
         checkCanWrite()
         if (samples.isEmpty()) return
+        require(samples.size % channelCount == 0) {
+            "PCM sample count must contain complete $channelCount-channel frames"
+        }
 
         var offset = 0
         while (offset < samples.size) {
@@ -98,7 +101,11 @@ class M4aWriter(
             inputBuffer.clear()
             inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
 
-            val capacitySamples = inputBuffer.remaining() / BYTES_PER_SAMPLE
+            // A stereo AAC input buffer must never end halfway through a frame.
+            val capacitySamples = (inputBuffer.remaining() / BYTES_PER_SAMPLE / channelCount) * channelCount
+            if (capacitySamples == 0) {
+                throw IOException("AAC encoder input buffer cannot hold a complete PCM frame")
+            }
             val samplesToWrite = minOf(capacitySamples, samples.size - offset)
             var index = 0
             while (index < samplesToWrite) {
@@ -291,12 +298,15 @@ class M4aWriter(
             resolver.openOutputStream(uri, "w")?.use { output ->
                 FileInputStream(temporaryFile).use { input -> input.copyTo(output) }
             } ?: throw IOException("Unable to open MediaStore output stream")
-            resolver.update(
+            val updated = resolver.update(
                 uri,
                 ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) },
                 null,
                 null,
             )
+            if (updated != 1) {
+                throw IOException("Unable to finalize MediaStore audio item: updated $updated rows")
+            }
             temporaryFile.delete()
             return uri
         } catch (t: Throwable) {
