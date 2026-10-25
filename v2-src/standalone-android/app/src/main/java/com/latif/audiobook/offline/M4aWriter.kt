@@ -10,6 +10,7 @@ import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.SystemClock
 import android.provider.MediaStore
 import java.io.File
 import java.io.FileInputStream
@@ -182,7 +183,11 @@ class M4aWriter(
     }
 
     private fun dequeueInputBufferOrThrow(): Int {
+        val startedAt = SystemClock.elapsedRealtime()
         while (true) {
+            if (SystemClock.elapsedRealtime() - startedAt > CODEC_STALL_TIMEOUT_MS) {
+                throw IOException("Timed out waiting for AAC encoder input buffer")
+            }
             val index = codec.dequeueInputBuffer(INPUT_TIMEOUT_US)
             when {
                 index >= 0 -> return index
@@ -205,7 +210,11 @@ class M4aWriter(
 
     private fun drainEncoder(endOfStream: Boolean) {
         val info = MediaCodec.BufferInfo()
+        val startedAt = if (endOfStream) SystemClock.elapsedRealtime() else 0L
         while (true) {
+            if (endOfStream && SystemClock.elapsedRealtime() - startedAt > CODEC_STALL_TIMEOUT_MS) {
+                throw IOException("Timed out finalizing AAC encoder output")
+            }
             val outputIndex = codec.dequeueOutputBuffer(info, if (endOfStream) OUTPUT_TIMEOUT_US else 0L)
             when {
                 outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
@@ -330,6 +339,7 @@ class M4aWriter(
         private const val INPUT_BUFFER_SIZE_BYTES = 64 * 1024
         private const val INPUT_TIMEOUT_US = 10_000L
         private const val OUTPUT_TIMEOUT_US = 10_000L
+        private const val CODEC_STALL_TIMEOUT_MS = 60_000L
         private const val SILENCE_BUFFER_FRAMES = 1024
 
         fun safeName(input: String): String {
