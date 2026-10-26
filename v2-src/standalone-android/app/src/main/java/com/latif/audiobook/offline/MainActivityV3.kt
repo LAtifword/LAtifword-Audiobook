@@ -222,6 +222,10 @@ class MainActivityV3 : Activity() {
             addView(body("استخدم المرجع المضمّن، أو اختر WAV نظيفاً بصوت تملك حق استخدامه مع النص الحرفي المنطوق. يفضّل 3–15 ثانية، صوت واحد، دون موسيقى أو صدى."))
             addView(button("استخدام المرجع المضمّن", false).apply {
                 setOnClickListener {
+                    // A pending import must not resurrect a superseded reference voice.
+                    // Stop current PCM before changing the selected reference.
+                    liveRequestSerial++
+                    liveSession?.stop()
                     referenceUri = null
                     referenceName = null
                     referenceInfo.text = "المرجع: SILMA Nabra-82M · ${VoiceReferenceConfig.SPEAKER} · مضمّن"
@@ -404,8 +408,10 @@ class MainActivityV3 : Activity() {
         runCatching {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        // A pending background import must not start with an obsolete book/voice choice.
+        // Selecting another book or reference invalidates pending imports and
+        // stops narration from the previous selection immediately.
         liveRequestSerial++
+        liveSession?.stop()
         if (requestCode == PICK_REFERENCE) {
             referenceUri = uri
             referenceName = queryName(uri)
