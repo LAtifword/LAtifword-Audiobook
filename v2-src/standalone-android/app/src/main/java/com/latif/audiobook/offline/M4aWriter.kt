@@ -44,6 +44,7 @@ class M4aWriter(
     private var trackIndex = -1
     private var muxerStarted = false
     private var submittedSamples = 0L
+    private var encodedAudioPackets = 0L
     private var finished = false
     private var aborted = false
     private val stopped = AtomicBoolean(false)
@@ -156,9 +157,11 @@ class M4aWriter(
         check(!finished) { "M4aWriter has already finished" }
 
         try {
+            check(submittedSamples > 0L) { "Cannot export an audiobook with no PCM audio" }
             queueEndOfStream()
             drainEncoder(endOfStream = true)
             check(muxerStarted) { "AAC encoder produced no output format" }
+            check(encodedAudioPackets > 0L) { "AAC encoder produced no audio packets" }
             // A non-empty file can still be corrupt if MediaMuxer.stop() fails.
             stopCodecAndMuxer(throwOnMuxerFailure = true)
             require(temporaryFile.isFile && temporaryFile.length() > 0L) {
@@ -249,6 +252,7 @@ class M4aWriter(
                             outputBuffer.position(info.offset)
                             outputBuffer.limit(info.offset + info.size)
                             muxer.writeSampleData(trackIndex, outputBuffer, info)
+                            encodedAudioPackets++
                         }
                     } finally {
                         codec.releaseOutputBuffer(outputIndex, false)
