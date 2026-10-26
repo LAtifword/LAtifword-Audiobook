@@ -44,6 +44,7 @@ class M4aWriter(
     private var trackIndex = -1
     private var muxerStarted = false
     private var submittedSamples = 0L
+    private var encodedAudioPackets = 0L
     private var finished = false
     private var aborted = false
     private val stopped = AtomicBoolean(false)
@@ -89,6 +90,9 @@ class M4aWriter(
     fun writePcm16(samples: ShortArray) {
         checkCanWrite()
         if (samples.isEmpty()) return
+        require(samples.size % channelCount == 0) {
+            "PCM sample count must contain complete $channelCount-channel frames"
+        }
 
         var offset = 0
         while (offset < samples.size) {
@@ -98,7 +102,11 @@ class M4aWriter(
             inputBuffer.clear()
             inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
 
-            val capacitySamples = inputBuffer.remaining() / BYTES_PER_SAMPLE
+            // A stereo AAC input buffer must never end halfway through a frame.
+            val capacitySamples = (inputBuffer.remaining() / BYTES_PER_SAMPLE / channelCount) * channelCount
+            if (capacitySamples == 0) {
+                throw IOException("AAC encoder input buffer cannot hold a complete PCM frame")
+            }
             val samplesToWrite = minOf(capacitySamples, samples.size - offset)
             var index = 0
             while (index < samplesToWrite) {
@@ -149,9 +157,13 @@ class M4aWriter(
         check(!finished) { "M4aWriter has already finished" }
 
         try {
+            check(submittedSamples > 0L) { "Cannot export an audiobook with no PCM audio" }
             queueEndOfStream()
             drainEncoder(endOfStream = true)
-            stopCodecAndMuxer()
+            check(muxerStarted) { "AAC encoder produced no output format" }
+            check(encodedAudioPackets > 0L) { "AAC encoder produced no audio packets" }
+            // A non-empty file can still be corrupt if MediaMuxer.stop() fails.
+            stopCodecAndMuxer(throwOnMuxerFailure = true)
             require(temporaryFile.isFile && temporaryFile.length() > 0L) {
                 "M4A output is empty"
             }
@@ -240,6 +252,7 @@ class M4aWriter(
                             outputBuffer.position(info.offset)
                             outputBuffer.limit(info.offset + info.size)
                             muxer.writeSampleData(trackIndex, outputBuffer, info)
+                            encodedAudioPackets++
                         }
                     } finally {
                         codec.releaseOutputBuffer(outputIndex, false)
@@ -253,12 +266,21 @@ class M4aWriter(
 
     private fun samplesToPts(samples: Long): Long = samples * 1_000_000L / sampleRate.toLong()
 
-    private fun stopCodecAndMuxer() {
+    private fun stopCodecAndMuxer(throwOnMuxerFailure: Boolean = false) {
         if (stopped.getAndSet(true)) return
         runCatching { codec.stop() }
         runCatching { codec.release() }
-        if (muxerStarted) runCatching { muxer.stop() }
+        // Always release native resources, but never publish a file if its
+        // MP4 container failed to finalize successfully.
+        val muxerStopFailure = if (muxerStarted) {
+            runCatching { muxer.stop() }.exceptionOrNull()
+        } else {
+            null
+        }
         runCatching { muxer.release() }
+        if (throwOnMuxerFailure && muxerStopFailure != null) {
+            throw IOException("Unable to finalize M4A container", muxerStopFailure)
+        }
     }
 
     private fun publishToMusicDirectory(): Uri {
@@ -291,16 +313,20 @@ class M4aWriter(
             resolver.openOutputStream(uri, "w")?.use { output ->
                 FileInputStream(temporaryFile).use { input -> input.copyTo(output) }
             } ?: throw IOException("Unable to open MediaStore output stream")
-            resolver.update(
+            val updated = resolver.update(
                 uri,
                 ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) },
                 null,
                 null,
             )
+            if (updated != 1) {
+                throw IOException("Unable to finalize MediaStore audio item: updated $updated rows")
+            }
             temporaryFile.delete()
             return uri
         } catch (t: Throwable) {
-            resolver.delete(uri, null, null)
+            // Cleanup must not replace the original publication error.
+            runCatching { resolver.delete(uri, null, null) }
             throw t
         }
     }
@@ -311,8 +337,8 @@ class M4aWriter(
             appContext.getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: appContext.filesDir,
             "LATIF Audiobooks",
         ).apply { mkdirs() }
-        val target = File(parent, fileName)
-        val staging = File(parent, "$fileName.tmp")
+        // Each export needs its own staging file, even when titles match.
+        val staging = File.createTempFile("latif_", ".m4a.tmp", parent)
         try {
             FileInputStream(temporaryFile).use { input ->
                 FileOutputStream(staging).use { output ->
@@ -320,21 +346,31 @@ class M4aWriter(
                     output.fd.sync()
                 }
             }
-            if (target.exists() && !target.delete()) {
-                throw IOException("Unable to replace ${target.absolutePath}")
-            }
-            if (!staging.renameTo(target)) {
-                throw IOException("Unable to commit ${target.absolutePath}")
+            // Never delete an existing audiobook before a replacement is ready.
+            // A failed rename must leave the previous export untouched.
+            val target = synchronized(PRE_Q_EXPORT_LOCK) {
+                val base = fileName.removeSuffix(".m4a")
+                val destination = (1..1_000).asSequence()
+                    .map { index ->
+                        File(parent, if (index == 1) fileName else "$base ($index).m4a")
+                    }
+                    .firstOrNull { !it.exists() }
+                    ?: throw IOException("Unable to allocate a unique audiobook filename")
+                if (!staging.renameTo(destination)) {
+                    throw IOException("Unable to commit ${destination.absolutePath}")
+                }
+                destination
             }
             temporaryFile.delete()
             return Uri.fromFile(target)
         } catch (t: Throwable) {
-            staging.delete()
+            runCatching { staging.delete() }
             throw t
         }
     }
 
     companion object {
+        private val PRE_Q_EXPORT_LOCK = Any()
         private const val BYTES_PER_SAMPLE = 2
         private const val INPUT_BUFFER_SIZE_BYTES = 64 * 1024
         private const val INPUT_TIMEOUT_US = 10_000L
